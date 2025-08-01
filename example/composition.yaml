@@ -1,17 +1,57 @@
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
-  name: function-template-go
+  name: s3-bucket-orphan-test
 spec:
   compositeTypeRef:
-    apiVersion: example.crossplane.io/v1
-    kind: XR
+    apiVersion: aws.platform.upbound.io/v1alpha1
+    kind: XS3Bucket
   mode: Pipeline
   pipeline:
-  - step: run-the-template
+  - step: create-buckets
     functionRef:
-      name: function-template-go
+      name: function-patch-and-transform
     input:
-      apiVersion: template.fn.crossplane.io/v1beta1
-      kind: Input
-      example: "Hello world"
+      apiVersion: pt.fn.crossplane.io/v1beta1
+      kind: Resources
+      resources:
+      - name: bucketshouldprocess1
+        base:
+          apiVersion: s3.aws.upbound.io/v1beta1
+          kind: Bucket
+          spec:
+            bucket: test
+            deletionPolicy: Orphan
+            managementPolicies: ["*"]
+            forProvider:
+              region: us-west-2
+      - name: bucketshouldprocess2
+        base:
+          apiVersion: s3.aws.upbound.io/v1beta1
+          kind: Bucket
+          spec:
+            bucket: test
+            deletionPolicy: Delete
+            managementPolicies: ["Create", "Update", "Observe"]
+            forProvider:
+              region: us-west-2
+      - name: bucketshouldnotprocess
+        base:
+          apiVersion: s3.aws.upbound.io/v1beta1
+          kind: Bucket
+          spec:
+            bucket: test
+            deletionPolicy: Delete
+            managementPolicies: ["*"]
+            forProvider:
+              region: us-west-2
+  - step: external-name-backup
+    functionRef:
+      name: function-external-name-backup-restore
+#    credentials:
+#      - name: aws-creds
+#        source: Secret
+#        secretRef:
+#          namespace: crossplane-system
+#          name: aws-account-creds
+#          key: credentials

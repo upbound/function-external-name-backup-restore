@@ -1,6 +1,20 @@
 # Replace this with your XR!
-apiVersion: example.crossplane.io/v1
-kind: XR
+apiVersion: aws.platform.upbound.io/v1alpha1
+kind: XNetwork
 metadata:
   name: example-xr
+  annotations:
+    # This enables external store loading and storing
+    fn.crossplane.io/enable-external-store: "true"
+    # Configuration annotations (matching previous default config)
+    fn.crossplane.io/cluster-id: "default"
+    fn.crossplane.io/store-type: "awsdynamodb"
+    fn.crossplane.io/dynamodb-table: "external-name-backup"
+    fn.crossplane.io/dynamodb-region: "us-west-2"
+    fn.crossplane.io/operation-mode: "only-orphaned"
+    # This deletes all the items for this composite from the store
+    #fn.crossplane.io/purge-external-store: "true"
+  labels:
+    crossplane.io/claim-namespace: some-namespace
+    crossplane.io/claim-name: some-name
 spec: {}
