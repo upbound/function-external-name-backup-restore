@@ -17,12 +17,14 @@ type MockExternalNameStore struct {
 }
 
 // NewMockStore creates a new MockExternalNameStore
-func NewMockStore(ctx context.Context, log logging.Logger) (*MockExternalNameStore, error) {
+//
+//nolint:unparam // error return maintained for interface consistency
+func NewMockStore(_ context.Context, _ logging.Logger) (*MockExternalNameStore, error) {
 	// If a test store is registered, return it
 	if testStoreRegistry != nil {
 		return testStoreRegistry, nil
 	}
-	
+
 	// Otherwise create a new one
 	return &MockExternalNameStore{
 		data: make(map[string]map[string]map[string]string),
@@ -39,10 +41,11 @@ func ClearTestStore() {
 	testStoreRegistry = nil
 }
 
-func (m *MockExternalNameStore) Save(ctx context.Context, clusterID, compositionKey string, externalNames map[string]string) error {
+// Save stores external names in the mock store
+func (m *MockExternalNameStore) Save(_ context.Context, clusterID, compositionKey string, externalNames map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.data[clusterID] == nil {
 		m.data[clusterID] = make(map[string]map[string]string)
 	}
@@ -53,10 +56,11 @@ func (m *MockExternalNameStore) Save(ctx context.Context, clusterID, composition
 	return nil
 }
 
-func (m *MockExternalNameStore) Load(ctx context.Context, clusterID, compositionKey string) (map[string]string, error) {
+// Load retrieves external names from the mock store
+func (m *MockExternalNameStore) Load(_ context.Context, clusterID, compositionKey string) (map[string]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	if clusterData, exists := m.data[clusterID]; exists {
 		if compositionData, exists := clusterData[compositionKey]; exists {
 			result := make(map[string]string)
@@ -69,10 +73,11 @@ func (m *MockExternalNameStore) Load(ctx context.Context, clusterID, composition
 	return make(map[string]string), nil
 }
 
-func (m *MockExternalNameStore) DeleteResource(ctx context.Context, clusterID, compositionKey, resourceKey string) error {
+// DeleteResource removes a specific resource from the mock store
+func (m *MockExternalNameStore) DeleteResource(_ context.Context, clusterID, compositionKey, resourceKey string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if clusterData, exists := m.data[clusterID]; exists {
 		if compositionData, exists := clusterData[compositionKey]; exists {
 			delete(compositionData, resourceKey)
@@ -81,10 +86,11 @@ func (m *MockExternalNameStore) DeleteResource(ctx context.Context, clusterID, c
 	return nil
 }
 
-func (m *MockExternalNameStore) Purge(ctx context.Context, clusterID, compositionKey string) error {
+// Purge removes all data for a composition from the mock store
+func (m *MockExternalNameStore) Purge(_ context.Context, clusterID, compositionKey string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if clusterData, exists := m.data[clusterID]; exists {
 		delete(clusterData, compositionKey)
 	}

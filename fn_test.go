@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 
@@ -13,78 +12,6 @@ import (
 	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"github.com/crossplane/function-sdk-go/resource"
 )
-
-
-// Helper function to create a structured resource
-func createResource(apiVersion, kind string, spec, metadata map[string]interface{}) *fnv1.Resource {
-	resourceData := map[string]interface{}{
-		"apiVersion": apiVersion,
-		"kind":       kind,
-	}
-	
-	if metadata != nil {
-		resourceData["metadata"] = metadata
-	}
-	
-	if spec != nil {
-		resourceData["spec"] = spec
-	}
-	
-	// Convert to JSON string manually for proper formatting
-	jsonStr := "{"
-	first := true
-	for k, v := range resourceData {
-		if !first {
-			jsonStr += ","
-		}
-		first = false
-		
-		switch vt := v.(type) {
-		case string:
-			jsonStr += fmt.Sprintf(`"%s":"%s"`, k, vt)
-		case map[string]interface{}:
-			// Handle nested objects
-			jsonStr += fmt.Sprintf(`"%s":%s`, k, formatMapAsJSON(vt))
-		}
-	}
-	jsonStr += "}"
-	
-	return &fnv1.Resource{
-		Resource: resource.MustStructJSON(jsonStr),
-	}
-}
-
-// Helper to format nested maps as JSON
-func formatMapAsJSON(m map[string]interface{}) string {
-	json := "{"
-	first := true
-	for k, v := range m {
-		if !first {
-			json += ","
-		}
-		first = false
-		
-		switch vt := v.(type) {
-		case string:
-			json += fmt.Sprintf(`"%s":"%s"`, k, vt)
-		case []interface{}:
-			json += fmt.Sprintf(`"%s":[`, k)
-			for i, item := range vt {
-				if i > 0 {
-					json += ","
-				}
-				if str, ok := item.(string); ok {
-					json += fmt.Sprintf(`"%s"`, str)
-				}
-			}
-			json += "]"
-		case map[string]interface{}:
-			json += fmt.Sprintf(`"%s":%s`, k, formatMapAsJSON(vt))
-		}
-	}
-	json += "}"
-	return json
-}
 
 func TestRunFunction(t *testing.T) {
 	type args struct {
@@ -134,7 +61,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -162,7 +89,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -183,7 +110,7 @@ func TestRunFunction(t *testing.T) {
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
-						"fn.crossplane.io/stored-external-name":  "my-test-bucket",
+						"fn.crossplane.io/stored-external-name": "my-test-bucket",
 						"fn.crossplane.io/external-name-stored": "", // timestamp will vary
 					},
 				},
@@ -193,7 +120,7 @@ func TestRunFunction(t *testing.T) {
 		"RestoreExternalNameFromStore": {
 			reason: "Should restore external name from store for orphaned resources without external-name",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "stored-bucket-name",
@@ -241,7 +168,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -259,7 +186,7 @@ func TestRunFunction(t *testing.T) {
 				err: nil,
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
-						"crossplane.io/external-name":           "stored-bucket-name",
+						"crossplane.io/external-name":             "stored-bucket-name",
 						"fn.crossplane.io/external-name-restored": "", // timestamp will vary
 					},
 				},
@@ -269,7 +196,7 @@ func TestRunFunction(t *testing.T) {
 		"DeleteExternalNameOnPolicyChange": {
 			reason: "Should delete external name from store when resource changes from Orphan to Delete policy",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "bucket-to-delete",
@@ -302,7 +229,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -330,7 +257,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -392,7 +319,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -420,7 +347,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -445,7 +372,7 @@ func TestRunFunction(t *testing.T) {
 		"AnnotationFallbackDesiredToObserved": {
 			reason: "Should find stored-external-name annotation in observed resource when not in desired",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "bucket-to-delete",
@@ -478,7 +405,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -506,7 +433,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -536,7 +463,7 @@ func TestRunFunction(t *testing.T) {
 		"DeletionPolicyFallbackDesiredToObserved": {
 			reason: "Should fallback to observed resource spec when desired resource has no spec",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "bucket-to-delete",
@@ -569,7 +496,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -601,7 +528,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket"
@@ -653,7 +580,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -682,7 +609,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -707,7 +634,7 @@ func TestRunFunction(t *testing.T) {
 		"SkipRestorationWhenExternalNameExists": {
 			reason: "Should skip restoration when desired resource already has external-name annotation",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "stored-bucket-name",
@@ -755,7 +682,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -819,7 +746,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -848,7 +775,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -869,7 +796,7 @@ func TestRunFunction(t *testing.T) {
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
-						"fn.crossplane.io/stored-external-name":  "delete-policy-bucket",
+						"fn.crossplane.io/stored-external-name": "delete-policy-bucket",
 						"fn.crossplane.io/external-name-stored": "", // timestamp will vary
 					},
 				},
@@ -901,7 +828,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -929,7 +856,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -980,7 +907,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"database": &fnv1.Resource{
+							"database": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "rds.aws.upbound.io/v1beta1",
 									"kind": "Instance",
@@ -1008,7 +935,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"database": &fnv1.Resource{
+							"database": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "rds.aws.upbound.io/v1beta1",
 									"kind": "Instance",
@@ -1059,7 +986,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"configmap": &fnv1.Resource{
+							"configmap": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "v1",
 									"kind": "ConfigMap",
@@ -1087,7 +1014,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"configmap": &fnv1.Resource{
+							"configmap": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "v1",
 									"kind": "ConfigMap"
@@ -1108,7 +1035,7 @@ func TestRunFunction(t *testing.T) {
 		"MultiResourceMixedOperations": {
 			reason: "Should handle storage, restoration, and deletion simultaneously for different resources",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket-restore": "old-bucket-name",
@@ -1142,7 +1069,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket-store": &fnv1.Resource{
+							"bucket-store": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1153,7 +1080,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-delete": &fnv1.Resource{
+							"bucket-delete": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1181,7 +1108,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket-store": &fnv1.Resource{
+							"bucket-store": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1191,7 +1118,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-restore": &fnv1.Resource{
+							"bucket-restore": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1201,7 +1128,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-delete": &fnv1.Resource{
+							"bucket-delete": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1226,7 +1153,7 @@ func TestRunFunction(t *testing.T) {
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket-store": {
-						"fn.crossplane.io/stored-external-name":  "new-bucket-to-store",
+						"fn.crossplane.io/stored-external-name": "new-bucket-to-store",
 						"fn.crossplane.io/external-name-stored": "", // timestamp will vary
 					},
 					"bucket-restore": {
@@ -1249,7 +1176,7 @@ func TestRunFunction(t *testing.T) {
 		"PartialCompositionUpdate": {
 			reason: "Should handle partial updates where some resources change while others remain the same",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
 						"s3.aws.upbound.io/v1beta1/Bucket/bucket-unchanged": "unchanged-bucket",
@@ -1283,7 +1210,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket-unchanged": &fnv1.Resource{
+							"bucket-unchanged": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1295,7 +1222,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-changing": &fnv1.Resource{
+							"bucket-changing": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1323,7 +1250,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket-unchanged": &fnv1.Resource{
+							"bucket-unchanged": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1333,7 +1260,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-changing": &fnv1.Resource{
+							"bucket-changing": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1355,7 +1282,7 @@ func TestRunFunction(t *testing.T) {
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket-changing": {
-						"fn.crossplane.io/stored-external-name":  "new-changing-bucket",
+						"fn.crossplane.io/stored-external-name": "new-changing-bucket",
 						"fn.crossplane.io/external-name-stored": "", // timestamp will vary
 					},
 				},
@@ -1365,11 +1292,11 @@ func TestRunFunction(t *testing.T) {
 		"ResourceTransitioningPolicies": {
 			reason: "Should handle resources transitioning between orphan and delete policies correctly",
 			setup: func(store *MockExternalNameStore) {
-				store.Save(context.Background(), "default", 
+				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
 					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-orphan-to-delete":  "bucket1",
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-delete-to-orphan":  "bucket2",
+						"s3.aws.upbound.io/v1beta1/Bucket/bucket-orphan-to-delete": "bucket1",
+						"s3.aws.upbound.io/v1beta1/Bucket/bucket-delete-to-orphan": "bucket2",
 					})
 			},
 			args: args{
@@ -1399,7 +1326,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket-orphan-to-delete": &fnv1.Resource{
+							"bucket-orphan-to-delete": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1410,7 +1337,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-delete-to-orphan": &fnv1.Resource{
+							"bucket-delete-to-orphan": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1438,7 +1365,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket-orphan-to-delete": &fnv1.Resource{
+							"bucket-orphan-to-delete": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1448,7 +1375,7 @@ func TestRunFunction(t *testing.T) {
 									}
 								}`),
 							},
-							"bucket-delete-to-orphan": &fnv1.Resource{
+							"bucket-delete-to-orphan": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1475,7 +1402,7 @@ func TestRunFunction(t *testing.T) {
 						"fn.crossplane.io/external-name-deleted": "", // timestamp will vary
 					},
 					"bucket-delete-to-orphan": {
-						"fn.crossplane.io/stored-external-name":  "bucket2",
+						"fn.crossplane.io/stored-external-name": "bucket2",
 						"fn.crossplane.io/external-name-stored": "", // timestamp will vary
 					},
 				},
@@ -1501,7 +1428,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket",
@@ -1525,7 +1452,7 @@ func TestRunFunction(t *testing.T) {
 							}`),
 						},
 						Resources: map[string]*fnv1.Resource{
-							"bucket": &fnv1.Resource{
+							"bucket": {
 								Resource: resource.MustStructJSON(`{
 									"apiVersion": "s3.aws.upbound.io/v1beta1",
 									"kind": "Bucket"
@@ -1553,17 +1480,16 @@ func TestRunFunction(t *testing.T) {
 			}
 			SetTestStore(mockStore)
 			defer ClearTestStore()
-			
+
 			// Run setup if provided
 			if tc.setup != nil {
 				tc.setup(mockStore)
 			}
 
-
 			f := &Function{
 				log: logging.NewNopLogger(),
 			}
-			
+
 			rsp, err := f.RunFunction(tc.args.ctx, tc.args.req)
 
 			// Check error
@@ -1578,10 +1504,10 @@ func TestRunFunction(t *testing.T) {
 			}
 
 			// Check that the function succeeded (no fatal errors)
-			if rsp.Results != nil {
-				for _, result := range rsp.Results {
-					if result.Severity == fnv1.Severity_SEVERITY_FATAL {
-						t.Errorf("%s\nFunction returned fatal error: %s", tc.reason, result.Message)
+			if rsp.GetResults() != nil {
+				for _, result := range rsp.GetResults() {
+					if result.GetSeverity() == fnv1.Severity_SEVERITY_FATAL {
+						t.Errorf("%s\nFunction returned fatal error: %s", tc.reason, result.GetMessage())
 					}
 				}
 			}
@@ -1597,7 +1523,7 @@ func TestRunFunction(t *testing.T) {
 				compositionKey = "default/test-claim/example.io/v1alpha1/XExample/test-xr"
 			}
 			storeData, _ := mockStore.Load(context.Background(), "default", compositionKey)
-			
+
 			for resourceKey, expectedValue := range tc.want.storeContains {
 				if actualValue, exists := storeData[resourceKey]; !exists {
 					t.Errorf("%s\nExpected store to contain %s, but it was missing", tc.reason, resourceKey)
@@ -1605,7 +1531,7 @@ func TestRunFunction(t *testing.T) {
 					t.Errorf("%s\nExpected store[%s] = %s, got %s", tc.reason, resourceKey, expectedValue, actualValue)
 				}
 			}
-			
+
 			for _, resourceKey := range tc.want.storeNotContains {
 				if _, exists := storeData[resourceKey]; exists {
 					t.Errorf("%s\nExpected store to NOT contain %s, but it was present", tc.reason, resourceKey)
@@ -1613,9 +1539,9 @@ func TestRunFunction(t *testing.T) {
 			}
 
 			// Check desired resource annotations
-			if rsp != nil && rsp.Desired != nil {
+			if rsp != nil && rsp.GetDesired() != nil {
 				for resourceName, expectedAnnotations := range tc.want.desiredAnnotations {
-					if resource, exists := rsp.Desired.Resources[resourceName]; exists {
+					if resource, exists := rsp.GetDesired().GetResources()[resourceName]; exists {
 						resourceStruct := resource.GetResource()
 						if resourceStruct != nil && resourceStruct.GetFields() != nil {
 							fields := resourceStruct.GetFields()
@@ -1638,9 +1564,9 @@ func TestRunFunction(t *testing.T) {
 						}
 					}
 				}
-				
+
 				for resourceName, notExpectedAnnotations := range tc.want.desiredNotAnnotations {
-					if resource, exists := rsp.Desired.Resources[resourceName]; exists {
+					if resource, exists := rsp.GetDesired().GetResources()[resourceName]; exists {
 						resourceStruct := resource.GetResource()
 						if resourceStruct != nil && resourceStruct.GetFields() != nil {
 							fields := resourceStruct.GetFields()
@@ -1763,19 +1689,19 @@ aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`,
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := parseAWSINICredentials(tt.iniContent)
-			
+
 			if tt.expectError {
 				if err == nil {
 					t.Errorf("Expected error but got nil")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Unexpected error: %v", err)
 				return
 			}
-			
+
 			if diff := cmp.Diff(tt.expected, result); diff != "" {
 				t.Errorf("Credential parsing mismatch (-expected +got):\n%s", diff)
 			}

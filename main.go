@@ -27,10 +27,7 @@ func (c *CLI) Run() error {
 		return err
 	}
 
-	fn, err := NewFunction(context.Background(), log)
-	if err != nil {
-		return err
-	}
+	fn := NewFunction(context.Background(), log)
 
 	return function.Serve(fn,
 		function.Listen(c.Network, c.Address),

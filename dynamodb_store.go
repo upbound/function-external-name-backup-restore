@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
 	"github.com/crossplane/function-sdk-go/logging"
 )
 
@@ -24,7 +26,7 @@ func NewDynamoDBStore(ctx context.Context, log logging.Logger, tableName, region
 	var cfg aws.Config
 	var err error
 
-	if awsCreds != nil && len(awsCreds) > 0 {
+	if len(awsCreds) > 0 {
 		// Use provided credentials
 		accessKeyID := awsCreds["accessKeyId"]
 		secretAccessKey := awsCreds["secretAccessKey"]
@@ -35,7 +37,7 @@ func NewDynamoDBStore(ctx context.Context, log logging.Logger, tableName, region
 		}
 
 		creds := credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)
-		cfg, err = config.LoadDefaultConfig(ctx, 
+		cfg, err = config.LoadDefaultConfig(ctx,
 			config.WithRegion(region),
 			config.WithCredentialsProvider(creds),
 		)
@@ -208,7 +210,6 @@ func (d *DynamoDBStore) DeleteResource(ctx context.Context, clusterID, compositi
 		"composition-key", compositionKey,
 		"resource-key", resourceKey)
 
-
 	return nil
 }
 
@@ -218,6 +219,6 @@ func isConditionalCheckFailedException(err error) bool {
 		return false
 	}
 	// Check if it's a ConditionalCheckFailedException
-	_, ok := err.(*types.ConditionalCheckFailedException)
-	return ok
+	var conditionalCheckFailedException *types.ConditionalCheckFailedException
+	return errors.As(err, &conditionalCheckFailedException)
 }
