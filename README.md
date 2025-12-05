@@ -52,7 +52,7 @@ This function solves the GitOps gap by:
 - 🔄 **Automatic Backup & Restore**: Seamlessly handles external name and resource name persistence
 - 🎯 **Operation Modes**: Choose between processing only orphaned resources or all resources for external names
 - 📦 **XR Name Backup**: Always backs up `metadata.name` for all resources (independent of operation mode)
-- 📊 **AWS DynamoDB Storage**: Reliable, scalable external storage backend
+- 📊 **Multiple Storage Backends**: AWS DynamoDB or Kubernetes ConfigMaps
 - 🏷️ **Annotation-Based Control**: Fine-grained control through XR annotations
 - ⚡ **Performance Optimized**: Tracking annotations prevent unnecessary writes
 - 🔧 **Flexible Configuration**: Environment variables and ConfigMap support
@@ -67,7 +67,11 @@ This function solves the GitOps gap by:
 kubectl apply -f package/crossplane.yaml
 ```
 
-### 2. Configure DynamoDB
+### 2. Configure Storage Backend
+
+Choose between DynamoDB or Kubernetes ConfigMaps as your storage backend.
+
+#### Option A: DynamoDB (Default)
 
 Create a DynamoDB table with the following schema:
 
@@ -77,7 +81,7 @@ TableName: external-name-backup
 KeySchema:
   - AttributeName: cluster_id
     KeyType: HASH
-  - AttributeName: composition_key  
+  - AttributeName: composition_key
     KeyType: RANGE
 AttributeDefinitions:
   - AttributeName: cluster_id
@@ -86,7 +90,79 @@ AttributeDefinitions:
     AttributeType: S
 ```
 
-### 3. Configure AWS Credentials
+#### Option B: Kubernetes ConfigMaps
+
+No external infrastructure required. The function stores data in ConfigMaps within your cluster.
+
+**ConfigMap naming convention:** `external-name-backup-{cluster-id}`
+
+**Data structure:**
+- Each ConfigMap contains data for one cluster
+- Composition keys are base64-encoded as data keys
+- Resource data is stored as JSON
+
+**Required RBAC permissions:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: function-external-name-backup-restore-configmap
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: function-external-name-backup-restore-configmap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: function-external-name-backup-restore-configmap
+subjects:
+  - kind: ServiceAccount
+    name: function-external-name-backup-restore
+    namespace: crossplane-system
+```
+
+**Usage in composition (no credentials needed):**
+
+```yaml
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: my-composition
+spec:
+  mode: Pipeline
+  pipeline:
+  - step: create-resources
+    functionRef:
+      name: function-patch-and-transform
+  - step: external-name-backup
+    functionRef:
+      name: function-external-name-backup-restore
+    # No credentials block needed for ConfigMap store
+```
+
+**XR annotations for ConfigMap store:**
+
+```yaml
+apiVersion: example.com/v1alpha1
+kind: MyXR
+metadata:
+  annotations:
+    fn.crossplane.io/enable-external-store: "true"
+    fn.crossplane.io/store-type: "k8sconfigmap"
+    fn.crossplane.io/cluster-id: "my-cluster"
+    fn.crossplane.io/configmap-namespace: "crossplane-system"  # optional, default
+```
+
+### 3. Configure AWS Credentials (DynamoDB only)
 
 Create a secret with your AWS credentials:
 
@@ -156,9 +232,10 @@ Configuration is provided through XR annotations. All configuration is specified
 |------------|---------|-------------|
 | `fn.crossplane.io/enable-external-store` | `"true"` | Enable external store operations |
 | `fn.crossplane.io/cluster-id` | `"my-cluster"` | Unique identifier for this cluster |
-| `fn.crossplane.io/store-type` | `"awsdynamodb"` | External store type (`awsdynamodb` or `mock`) |
-| `fn.crossplane.io/dynamodb-table` | `"external-name-backup"` | DynamoDB table name |
-| `fn.crossplane.io/dynamodb-region` | `"us-west-2"` | AWS region for DynamoDB |
+| `fn.crossplane.io/store-type` | `"awsdynamodb"` | External store type (`awsdynamodb`, `k8sconfigmap`, or `mock`) |
+| `fn.crossplane.io/dynamodb-table` | `"external-name-backup"` | DynamoDB table name (only for `awsdynamodb`) |
+| `fn.crossplane.io/dynamodb-region` | `"us-west-2"` | AWS region for DynamoDB (only for `awsdynamodb`) |
+| `fn.crossplane.io/configmap-namespace` | `"crossplane-system"` | Namespace for ConfigMap store (only for `k8sconfigmap`, default: `crossplane-system`) |
 | `fn.crossplane.io/operation-mode` | `"only-orphaned"` | Operation mode (`only-orphaned` or `all-resources`) |
 
 ### Optional Annotations

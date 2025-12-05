@@ -56,6 +56,9 @@ const (
 	// OperationModeAnnotation specifies the operation mode
 	OperationModeAnnotation = "fn.crossplane.io/operation-mode"
 
+	// ConfigMapNamespaceAnnotation specifies the namespace for ConfigMap store
+	ConfigMapNamespaceAnnotation = "fn.crossplane.io/configmap-namespace"
+
 	// OverrideKindAnnotation allows overriding the XR kind used in composition key lookup
 	// This is useful for migrations where the XR kind changes between versions
 	OverrideKindAnnotation = "fn.crossplane.io/override-kind"
@@ -96,21 +99,23 @@ func NewFunction(_ context.Context, log logging.Logger) *Function {
 
 // FunctionConfig holds all configuration for the function
 type FunctionConfig struct {
-	ClusterID      string
-	StoreType      string
-	DynamoDBTable  string
-	DynamoDBRegion string
-	OperationMode  string
+	ClusterID          string
+	StoreType          string
+	DynamoDBTable      string
+	DynamoDBRegion     string
+	ConfigMapNamespace string
+	OperationMode      string
 }
 
 // getConfigFromAnnotations extracts configuration from XR annotations with defaults
 func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) *FunctionConfig {
 	config := &FunctionConfig{
-		ClusterID:      "default",
-		StoreType:      "awsdynamodb",
-		DynamoDBTable:  "external-name-backup",
-		DynamoDBRegion: "us-west-2",
-		OperationMode:  OperationModeOnlyOrphaned,
+		ClusterID:          "default",
+		StoreType:          "awsdynamodb",
+		DynamoDBTable:      "external-name-backup",
+		DynamoDBRegion:     "us-west-2",
+		ConfigMapNamespace: "crossplane-system",
+		OperationMode:      OperationModeOnlyOrphaned,
 	}
 
 	// Check observed composite first for XR annotations (the source of truth),
@@ -150,12 +155,16 @@ func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) 
 	if operationMode := getConfigAnnotation(OperationModeAnnotation); operationMode != "" {
 		config.OperationMode = operationMode
 	}
+	if configMapNamespace := getConfigAnnotation(ConfigMapNamespaceAnnotation); configMapNamespace != "" {
+		config.ConfigMapNamespace = configMapNamespace
+	}
 
 	log.Info("Configuration loaded from XR annotations",
 		"cluster-id", config.ClusterID,
 		"store-type", config.StoreType,
 		"dynamodb-table", config.DynamoDBTable,
 		"dynamodb-region", config.DynamoDBRegion,
+		"configmap-namespace", config.ConfigMapNamespace,
 		"operation-mode", config.OperationMode)
 
 	return config
@@ -674,9 +683,15 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			response.Fatal(rsp, errors.Wrapf(err, "failed to initialize Mock store"))
 			return rsp, nil
 		}
+	case "k8sconfigmap":
+		store, err = NewConfigMapStore(ctx, f.log, config.ConfigMapNamespace)
+		if err != nil {
+			response.Fatal(rsp, errors.Wrapf(err, "failed to initialize ConfigMap store"))
+			return rsp, nil
+		}
 
 	default:
-		response.Fatal(rsp, errors.Errorf("unsupported external store type: %s (supported types: 'awsdynamodb', 'mock')", config.StoreType))
+		response.Fatal(rsp, errors.Errorf("unsupported external store type: %s (supported types: 'awsdynamodb', 'mock', 'k8sconfigmap')", config.StoreType))
 		return rsp, nil
 	}
 
