@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	// StoredExternalNameAnnotation tracks the external name value stored in the external store
+	// StoredExternalNameAnnotation tracks the external name value stored in the store
 	StoredExternalNameAnnotation = "fn.crossplane.io/stored-external-name"
 
 	// ExternalNameStoredAnnotation tracks when the external name was stored with timestamp
@@ -29,6 +29,15 @@ const (
 
 	// ExternalNameRestoredAnnotation tracks when the external name was restored with timestamp
 	ExternalNameRestoredAnnotation = "fn.crossplane.io/external-name-restored"
+
+	// StoredResourceNameAnnotation tracks the resource name (metadata.name) stored in the store
+	StoredResourceNameAnnotation = "fn.crossplane.io/stored-resource-name"
+
+	// ResourceNameStoredAnnotation tracks when the resource name was stored with timestamp
+	ResourceNameStoredAnnotation = "fn.crossplane.io/resource-name-stored"
+
+	// ResourceNameRestoredAnnotation tracks when the resource name was restored with timestamp
+	ResourceNameRestoredAnnotation = "fn.crossplane.io/resource-name-restored"
 
 	// EnableExternalStoreAnnotation on XR enables external store loading and storing
 	EnableExternalStoreAnnotation = "fn.crossplane.io/enable-external-store"
@@ -46,6 +55,19 @@ const (
 	DynamoDBRegionAnnotation = "fn.crossplane.io/dynamodb-region"
 	// OperationModeAnnotation specifies the operation mode
 	OperationModeAnnotation = "fn.crossplane.io/operation-mode"
+
+	// OverrideKindAnnotation allows overriding the XR kind used in composition key lookup
+	// This is useful for migrations where the XR kind changes between versions
+	OverrideKindAnnotation = "fn.crossplane.io/override-kind"
+
+	// OverrideNamespaceAnnotation allows overriding the namespace used in composition key lookup
+	// This is useful for migrations from cluster-scoped to namespaced XRs
+	OverrideNamespaceAnnotation = "fn.crossplane.io/override-namespace"
+
+	// RequireRestoreAnnotation when set to "true" will fail the function if no external names
+	// can be restored from the store. This prevents accidental resource creation during migrations
+	// when override annotations are misconfigured.
+	RequireRestoreAnnotation = "fn.crossplane.io/require-restore"
 
 	// OperationModeOnlyOrphaned processes only orphaned resources
 	OperationModeOnlyOrphaned = "only-orphaned"
@@ -91,30 +113,42 @@ func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) 
 		OperationMode:  OperationModeOnlyOrphaned,
 	}
 
-	// Check desired composite first, then observed composite as fallback
-	var composite *structpb.Struct
-	if desiredComposite := req.GetDesired().GetComposite().GetResource(); desiredComposite != nil {
-		composite = desiredComposite
-	} else if observedComposite := req.GetObserved().GetComposite().GetResource(); observedComposite != nil {
-		composite = observedComposite
+	// Check observed composite first for XR annotations (the source of truth),
+	// then fall back to desired composite for each annotation if not found.
+	// This is important because previous pipeline steps may create a desired composite
+	// without preserving the original XR annotations.
+	observedComposite := req.GetObserved().GetComposite().GetResource()
+	desiredComposite := req.GetDesired().GetComposite().GetResource()
+
+	// Helper to get annotation from observed first, then desired as fallback
+	getConfigAnnotation := func(annotation string) string {
+		if observedComposite != nil {
+			if val := getAnnotationValue(observedComposite, annotation); val != "" {
+				return val
+			}
+		}
+		if desiredComposite != nil {
+			if val := getAnnotationValue(desiredComposite, annotation); val != "" {
+				return val
+			}
+		}
+		return ""
 	}
 
-	if composite != nil {
-		if clusterID := getAnnotationValue(composite, ClusterIDAnnotation); clusterID != "" {
-			config.ClusterID = clusterID
-		}
-		if storeType := getAnnotationValue(composite, StoreTypeAnnotation); storeType != "" {
-			config.StoreType = storeType
-		}
-		if dynamoDBTable := getAnnotationValue(composite, DynamoDBTableAnnotation); dynamoDBTable != "" {
-			config.DynamoDBTable = dynamoDBTable
-		}
-		if dynamoDBRegion := getAnnotationValue(composite, DynamoDBRegionAnnotation); dynamoDBRegion != "" {
-			config.DynamoDBRegion = dynamoDBRegion
-		}
-		if operationMode := getAnnotationValue(composite, OperationModeAnnotation); operationMode != "" {
-			config.OperationMode = operationMode
-		}
+	if clusterID := getConfigAnnotation(ClusterIDAnnotation); clusterID != "" {
+		config.ClusterID = clusterID
+	}
+	if storeType := getConfigAnnotation(StoreTypeAnnotation); storeType != "" {
+		config.StoreType = storeType
+	}
+	if dynamoDBTable := getConfigAnnotation(DynamoDBTableAnnotation); dynamoDBTable != "" {
+		config.DynamoDBTable = dynamoDBTable
+	}
+	if dynamoDBRegion := getConfigAnnotation(DynamoDBRegionAnnotation); dynamoDBRegion != "" {
+		config.DynamoDBRegion = dynamoDBRegion
+	}
+	if operationMode := getConfigAnnotation(OperationModeAnnotation); operationMode != "" {
+		config.OperationMode = operationMode
 	}
 
 	log.Info("Configuration loaded from XR annotations",
@@ -245,6 +279,41 @@ func getAnnotationValue(composite *structpb.Struct, annotation string) string {
 	return ""
 }
 
+// getMetadataName gets the metadata.name from a resource struct
+func getMetadataName(resource *structpb.Struct) string {
+	if fields := resource.GetFields(); fields != nil {
+		if metadata := fields["metadata"]; metadata != nil {
+			if metadataStruct := metadata.GetStructValue(); metadataStruct != nil {
+				if name := metadataStruct.GetFields()["name"]; name != nil {
+					return name.GetStringValue()
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// getMetadataNameFromResource gets metadata.name from a resource, checking both desired and observed as fallback
+func getMetadataNameFromResource(req *fnv1.RunFunctionRequest, resourceName string) string {
+	// Check desired resource first
+	if desiredResource, exists := req.GetDesired().GetResources()[resourceName]; exists {
+		if resourceStruct := desiredResource.GetResource(); resourceStruct != nil {
+			if name := getMetadataName(resourceStruct); name != "" {
+				return name
+			}
+		}
+	}
+
+	// Fallback to observed resource if not found in desired
+	if observedResource, exists := req.GetObserved().GetResources()[resourceName]; exists {
+		if resourceStruct := observedResource.GetResource(); resourceStruct != nil {
+			return getMetadataName(resourceStruct)
+		}
+	}
+
+	return ""
+}
+
 // getAnnotationValueFromResource gets an annotation value from a resource, checking both desired and observed as fallback
 func getAnnotationValueFromResource(req *fnv1.RunFunctionRequest, resourceName string, annotation string) string {
 	// Check desired resource first
@@ -307,6 +376,25 @@ func checkPurgeAnnotation(composite *structpb.Struct, log logging.Logger, source
 			"annotation", PurgeExternalStoreAnnotation,
 			"value", purgeValue)
 		return true
+	}
+	return false
+}
+
+// shouldRequireRestore checks if the require-restore annotation is set to "true"
+// When enabled, the function will fail if no external names can be restored from the store
+// This prevents accidental resource creation during migrations when override annotations are misconfigured
+func shouldRequireRestore(req *fnv1.RunFunctionRequest) bool {
+	// Check observed first (source of truth for XR annotations)
+	if observedComposite := req.GetObserved().GetComposite().GetResource(); observedComposite != nil {
+		if val := getAnnotationValue(observedComposite, RequireRestoreAnnotation); val == "true" {
+			return true
+		}
+	}
+	// Check desired as fallback
+	if desiredComposite := req.GetDesired().GetComposite().GetResource(); desiredComposite != nil {
+		if val := getAnnotationValue(desiredComposite, RequireRestoreAnnotation); val == "true" {
+			return true
+		}
 	}
 	return false
 }
@@ -402,9 +490,12 @@ func (f *Function) removeTrackingAnnotationsFromObserved(req *fnv1.RunFunctionRe
 							if annotationsStruct := annotations.GetStructValue(); annotationsStruct != nil {
 								fields := annotationsStruct.GetFields()
 								if fields != nil {
-									// Remove tracking annotations
+									// Remove external name tracking annotations
 									delete(fields, StoredExternalNameAnnotation)
 									delete(fields, ExternalNameStoredAnnotation)
+									// Remove resource name tracking annotations
+									delete(fields, StoredResourceNameAnnotation)
+									delete(fields, ResourceNameStoredAnnotation)
 								}
 							}
 						}
@@ -597,7 +688,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		"store-type", config.StoreType)
 
 	// Extract claim and XR information from composite resource
-	var xrAPIVersion, xrKind, xrName, claimNamespace, claimName string
+	var xrAPIVersion, xrKind, xrName, xrNamespace, claimNamespace, claimName string
 
 	// Use observed composite for metadata extraction (it has complete info)
 	if observedComposite := req.GetObserved().GetComposite().GetResource(); observedComposite != nil {
@@ -612,6 +703,10 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 				if metadataStruct := metadata.GetStructValue(); metadataStruct != nil {
 					if name := metadataStruct.GetFields()["name"]; name != nil {
 						xrName = name.GetStringValue()
+					}
+					// Extract XR namespace (for namespaced XRs)
+					if ns := metadataStruct.GetFields()["namespace"]; ns != nil {
+						xrNamespace = ns.GetStringValue()
 					}
 					// Extract claim info from labels
 					if labels := metadataStruct.GetFields()["labels"]; labels != nil {
@@ -630,8 +725,15 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	}
 
 	// Set defaults if claim info not found
+	// For namespaced XRs without claims, use XR namespace as fallback
 	if claimNamespace == "" {
-		claimNamespace = "none"
+		if xrNamespace != "" {
+			claimNamespace = xrNamespace
+			f.log.Info("Using XR namespace as claim-namespace for namespaced XR without claim",
+				"xr-namespace", xrNamespace)
+		} else {
+			claimNamespace = "none"
+		}
 	}
 	if claimName == "" {
 		claimName = "none"
@@ -641,8 +743,46 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		"xr-api-version", xrAPIVersion,
 		"xr-kind", xrKind,
 		"xr-name", xrName,
+		"xr-namespace", xrNamespace,
 		"claim-namespace", claimNamespace,
 		"claim-name", claimName)
+
+	// Check for kind override annotation (useful for migrations where XR kind changes)
+	// Check desired first, then observed as fallback
+	kindForKey := xrKind
+	var overrideKind string
+	if desiredComposite := req.GetDesired().GetComposite().GetResource(); desiredComposite != nil {
+		overrideKind = getAnnotationValue(desiredComposite, OverrideKindAnnotation)
+	}
+	if overrideKind == "" {
+		if observedComposite := req.GetObserved().GetComposite().GetResource(); observedComposite != nil {
+			overrideKind = getAnnotationValue(observedComposite, OverrideKindAnnotation)
+		}
+	}
+	if overrideKind != "" {
+		f.log.Info("Using override-kind for composition key lookup",
+			"original-kind", xrKind,
+			"override-kind", overrideKind)
+		kindForKey = overrideKind
+	}
+
+	// Check for namespace override annotation (useful for migrations from cluster-scoped to namespaced)
+	namespaceForKey := claimNamespace
+	var overrideNamespace string
+	if desiredComposite := req.GetDesired().GetComposite().GetResource(); desiredComposite != nil {
+		overrideNamespace = getAnnotationValue(desiredComposite, OverrideNamespaceAnnotation)
+	}
+	if overrideNamespace == "" {
+		if observedComposite := req.GetObserved().GetComposite().GetResource(); observedComposite != nil {
+			overrideNamespace = getAnnotationValue(observedComposite, OverrideNamespaceAnnotation)
+		}
+	}
+	if overrideNamespace != "" {
+		f.log.Info("Using override-namespace for composition key lookup",
+			"original-namespace", claimNamespace,
+			"override-namespace", overrideNamespace)
+		namespaceForKey = overrideNamespace
+	}
 
 	// Parse function input (for future extensibility)
 	in := &v1beta1.Input{}
@@ -651,8 +791,9 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil
 	}
 
-	// Create composition key: {claimNamespace}/{claimName}/{apiVersionOfXr}/{kindOfXr}/{metadata.name of XR}
-	compositionKey := fmt.Sprintf("%s/%s/%s/%s/%s", claimNamespace, claimName, xrAPIVersion, xrKind, xrName)
+	// Create composition key: {namespace}/{claimName}/{apiVersionOfXr}/{kindOfXr}/{metadata.name of XR}
+	// Note: Uses namespaceForKey and kindForKey which may be overridden by annotations
+	compositionKey := fmt.Sprintf("%s/%s/%s/%s/%s", namespaceForKey, claimName, xrAPIVersion, kindForKey, xrName)
 
 	// Compute timestamp once for this operation
 	timestamp := time.Now().UTC().Format(time.RFC3339)
@@ -681,21 +822,34 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil
 	}
 
-	// Load existing external names from pre-initialized store
+	// Load existing resource data from pre-initialized store
 	loadedResources, err := store.Load(ctx, clusterID, compositionKey)
 	if err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "failed to load external names from store"))
+		response.Fatal(rsp, errors.Wrapf(err, "failed to load resource data from store"))
+		return rsp, nil
+	}
+
+	// Safety check: if require-restore is set and no data found, fail to prevent accidental creation
+	requireRestore := shouldRequireRestore(req)
+	if requireRestore && len(loadedResources) == 0 {
+		response.Fatal(rsp, errors.Errorf(
+			"require-restore is enabled but no resource data found in store for composition key %q. "+
+				"Check that override-kind and override-namespace annotations are correct, or remove require-restore annotation.",
+			compositionKey))
 		return rsp, nil
 	}
 
 	// Convert to nested structure for processing
-	externalNameStore := map[string]map[string]string{
+	resourceDataStore := map[string]map[string]ResourceData{
 		compositionKey: loadedResources,
 	}
-	f.log.Info("Loaded external names from store", "loaded-count", len(loadedResources))
+	f.log.Info("Loaded resource data from store",
+		"composition-key", compositionKey,
+		"loaded-count", len(loadedResources),
+		"require-restore", requireRestore)
 
-	// Track only NEW external names that should be stored (not restored ones)
-	newExternalNames := make(map[string]string)
+	// Track only NEW resource data that should be stored (not restored ones)
+	newResourceData := make(map[string]ResourceData)
 
 	// Pre-calculate shouldProcess for all resources to avoid redundant checks
 	resourceShouldProcess := make(map[string]bool)
@@ -709,14 +863,6 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 
 			// Use pipeline resource name as the stable identifier
 			resourceName := name
-
-			var apiVersion, kind string
-			if av := fields["apiVersion"]; av != nil {
-				apiVersion = av.GetStringValue()
-			}
-			if k := fields["kind"]; k != nil {
-				kind = k.GetStringValue()
-			}
 
 			// Check if this desired resource should be deleted from external store
 			// This check applies to ALL resources, not just those that meet orphan criteria
@@ -739,25 +885,25 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			}
 
 			if shouldDelete {
-				resourceKey := fmt.Sprintf("%s/%s/%s", apiVersion, kind, resourceName)
+				resourceKey := resourceName
 
 				f.log.Info("Processing deletion for desired resource",
 					"resource", resourceName,
 					"resource-key", resourceKey)
 
-				// Delete from external store
+				// Delete from store
 				err := store.DeleteResource(ctx, clusterID, compositionKey, resourceKey)
 				if err != nil {
-					f.log.Info("Failed to delete resource from external store",
+					f.log.Info("Failed to delete resource from store",
 						"resource", resourceName,
 						"error", err.Error())
 				} else {
-					f.log.Info("Deleted resource from external store",
+					f.log.Info("Deleted resource from store",
 						"resource", resourceName,
 						"resource-key", resourceKey)
 
 					// Remove from local cache so it doesn't get re-added during save
-					if compositionData, exists := externalNameStore[compositionKey]; exists {
+					if compositionData, exists := resourceDataStore[compositionKey]; exists {
 						delete(compositionData, resourceKey)
 					}
 
@@ -822,21 +968,21 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	}
 
 	// After all deletions, check if the composition is empty and clean it up
-	if compositionData, exists := externalNameStore[compositionKey]; exists && len(compositionData) == 0 {
-		f.log.Info("Composition has no external names left, purging entire composition from store",
+	if compositionData, exists := resourceDataStore[compositionKey]; exists && len(compositionData) == 0 {
+		f.log.Info("Composition has no resource data left, purging entire composition from store",
 			"composition-key", compositionKey)
 
 		err := store.Purge(ctx, clusterID, compositionKey)
 		if err != nil {
-			f.log.Info("Failed to purge empty composition from external store",
+			f.log.Info("Failed to purge empty composition from store",
 				"composition-key", compositionKey,
 				"error", err.Error())
 		} else {
-			f.log.Info("Successfully purged empty composition from external store",
+			f.log.Info("Successfully purged empty composition from store",
 				"composition-key", compositionKey)
 
 			// Remove from local cache
-			delete(externalNameStore, compositionKey)
+			delete(resourceDataStore, compositionKey)
 		}
 	}
 
@@ -864,53 +1010,99 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			)
 
 			// Check if this resource should be processed for external store operations
+			// When requireRestore is true, we always attempt restore but never backup
 			shouldProcess := f.shouldProcessResource(fields, resourceName, operationMode)
-			resourceShouldProcess[resourceName] = shouldProcess // Cache the result
-			if !shouldProcess {
+			if !requireRestore {
+				resourceShouldProcess[resourceName] = shouldProcess // Only cache for backup when not in restore mode
+			}
+			// When requireRestore is false, skip if operation mode doesn't allow processing
+			// When requireRestore is true, always continue to attempt restore
+			if !shouldProcess && !requireRestore {
 				f.log.Info("Skipping external store operations for desired resource due to operation mode", "resource", resourceName, "mode", operationMode)
-				continue // For desired resources, we can skip entirely since we're only restoring
+				continue
 			}
 
 			// Check if the resource already has an external-name annotation (desired first, then observed as fallback)
 			existingExternalName := getAnnotationValueFromResource(req, resourceName, "crossplane.io/external-name")
 			hasExistingExternalName := existingExternalName != ""
 
-			if hasExistingExternalName {
-				f.log.Info("Resource already has external-name, skipping restoration",
-					"resource", resourceName,
-					"existing-external-name", existingExternalName,
-				)
-			}
+			// Check if the resource already has a metadata.name
+			existingResourceName := getMetadataNameFromResource(req, resourceName)
+			hasExistingResourceName := existingResourceName != ""
 
-			// Only restore if no existing external-name and we have one in our store
-			if !hasExistingExternalName {
-				// Create key for external name store lookup using pipeline resource name
-				resourceKey := fmt.Sprintf("%s/%s/%s", apiVersion, kind, resourceName)
+			// Create key for store lookup using pipeline resource name
+			resourceKey := resourceName
 
-				// Check if we have an external name for this resource in our store
-				if compositionData, compositionExists := externalNameStore[compositionKey]; compositionExists {
-					if externalName, resourceExists := compositionData[resourceKey]; resourceExists {
-						f.log.Info("Restoring external-name from store with timestamp",
-							"resource", resourceName,
-							"external-name", externalName,
-							"timestamp", timestamp,
-						)
-
-						// Add/update the external-name annotation in the desired resource
-						// Ensure metadata exists
-						if fields["metadata"] == nil {
-							fields["metadata"] = &structpb.Value{
-								Kind: &structpb.Value_StructValue{
-									StructValue: &structpb.Struct{
-										Fields: make(map[string]*structpb.Value),
-									},
+			// Check if we have data for this resource in our store
+			if compositionData, compositionExists := resourceDataStore[compositionKey]; compositionExists {
+				if storedData, resourceExists := compositionData[resourceKey]; resourceExists {
+					// Ensure metadata exists before any restoration
+					if fields["metadata"] == nil {
+						fields["metadata"] = &structpb.Value{
+							Kind: &structpb.Value_StructValue{
+								StructValue: &structpb.Struct{
+									Fields: make(map[string]*structpb.Value),
 								},
-							}
+							},
 						}
+					}
 
-						if metadata := fields["metadata"]; metadata != nil {
-							if metadataStruct := metadata.GetStructValue(); metadataStruct != nil {
-								metadataFields := metadataStruct.GetFields()
+					if metadata := fields["metadata"]; metadata != nil {
+						if metadataStruct := metadata.GetStructValue(); metadataStruct != nil {
+							metadataFields := metadataStruct.GetFields()
+
+							// Restore resource name (metadata.name) if not already set
+							if !hasExistingResourceName && storedData.ResourceName != "" {
+								f.log.Info("Restoring resource name from store",
+									"resource", resourceName,
+									"resource-name", storedData.ResourceName,
+									"timestamp", timestamp,
+								)
+
+								// Set metadata.name
+								metadataFields["name"] = &structpb.Value{
+									Kind: &structpb.Value_StringValue{
+										StringValue: storedData.ResourceName,
+									},
+								}
+
+								// Ensure annotations exist for tracking
+								if metadataFields["annotations"] == nil {
+									metadataFields["annotations"] = &structpb.Value{
+										Kind: &structpb.Value_StructValue{
+											StructValue: &structpb.Struct{
+												Fields: make(map[string]*structpb.Value),
+											},
+										},
+									}
+								}
+
+								if annotationsStruct := metadataFields["annotations"].GetStructValue(); annotationsStruct != nil {
+									if annotationsStruct.Fields == nil {
+										annotationsStruct.Fields = make(map[string]*structpb.Value)
+									}
+
+									// Add tracking annotations for resource name
+									annotationsStruct.Fields[StoredResourceNameAnnotation] = &structpb.Value{
+										Kind: &structpb.Value_StringValue{
+											StringValue: storedData.ResourceName,
+										},
+									}
+									annotationsStruct.Fields[ResourceNameRestoredAnnotation] = &structpb.Value{
+										Kind: &structpb.Value_StringValue{
+											StringValue: timestamp,
+										},
+									}
+								}
+							}
+
+							// Restore external name if not already set
+							if !hasExistingExternalName && storedData.ExternalName != "" {
+								f.log.Info("Restoring external-name from store",
+									"resource", resourceName,
+									"external-name", storedData.ExternalName,
+									"timestamp", timestamp,
+								)
 
 								// Ensure annotations exist
 								if metadataFields["annotations"] == nil {
@@ -924,7 +1116,6 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 								}
 
 								if annotationsStruct := metadataFields["annotations"].GetStructValue(); annotationsStruct != nil {
-									// Ensure the Fields map exists
 									if annotationsStruct.Fields == nil {
 										annotationsStruct.Fields = make(map[string]*structpb.Value)
 									}
@@ -932,14 +1123,14 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 									// Set the external-name annotation
 									annotationsStruct.Fields["crossplane.io/external-name"] = &structpb.Value{
 										Kind: &structpb.Value_StringValue{
-											StringValue: externalName,
+											StringValue: storedData.ExternalName,
 										},
 									}
 
 									// Add tracking annotation
 									annotationsStruct.Fields[StoredExternalNameAnnotation] = &structpb.Value{
 										Kind: &structpb.Value_StringValue{
-											StringValue: externalName,
+											StringValue: storedData.ExternalName,
 										},
 									}
 
@@ -952,11 +1143,25 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 								}
 							}
 						}
-					} else {
-						f.log.Info("No external-name found in store for resource", "resource", resourceName, "composition-key", compositionKey, "resource-key", resourceKey)
 					}
 				} else {
-					f.log.Info("No composition found in store", "composition-key", compositionKey)
+					f.log.Info("No data found in store for resource", "resource", resourceName, "composition-key", compositionKey, "resource-key", resourceKey)
+					if requireRestore {
+						response.Fatal(rsp, errors.Errorf(
+							"require-restore is enabled but no data found in store for resource %q (composition key: %q). "+
+								"All resources must have data in the store when require-restore is set.",
+							resourceName, compositionKey))
+						return rsp, nil
+					}
+				}
+			} else {
+				f.log.Info("No composition found in store", "composition-key", compositionKey)
+				if requireRestore {
+					response.Fatal(rsp, errors.Errorf(
+						"require-restore is enabled but no composition data found in store for key %q. "+
+							"Check that override-kind and override-namespace annotations are correct.",
+						compositionKey))
+					return rsp, nil
 				}
 			}
 		}
@@ -993,73 +1198,92 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 				resourceShouldProcess[resourceName] = shouldProcessForStore
 			}
 
-			// Check for external-name annotation in metadata
+			// Get values to potentially store
 			composite := &structpb.Struct{Fields: fields}
 			externalNameValue := getAnnotationValue(composite, "crossplane.io/external-name")
-			if externalNameValue != "" {
-				// Only store if resource should be processed for the external store
-				if shouldProcessForStore {
-					// Check if resource already has stored-external-name annotation to avoid unnecessary writes
-					storedExternalName := getAnnotationValue(composite, StoredExternalNameAnnotation)
-					shouldStore := storedExternalName != externalNameValue
-					if !shouldStore {
-						f.log.Info("Skipping store operation - resource already has stored-external-name annotation with same value",
-							"resource", resourceName,
-							"external-name", externalNameValue)
-					} else {
-						f.log.Info("Will store external name - no existing annotation found",
-							"resource", resourceName,
-							"external-name", externalNameValue)
-					}
+			resourceNameValue := getMetadataName(resourceStruct)
 
-					if shouldStore {
-						// Create resource key for this observed resource
-						observedResourceKey := fmt.Sprintf("%s/%s/%s", apiVersion, kind, resourceName)
+			// Check if we need to store anything
+			storedExternalName := getAnnotationValue(composite, StoredExternalNameAnnotation)
+			storedResourceName := getAnnotationValue(composite, StoredResourceNameAnnotation)
 
-						// Store the external name for saving to external store later
-						newExternalNames[observedResourceKey] = externalNameValue
+			// External name backup respects operation mode (only for managed resources with deletion policies)
+			shouldStoreExternalName := shouldProcessForStore && externalNameValue != "" && storedExternalName != externalNameValue
 
-						f.log.Info("Marked external-name for storage",
-							"resource", resourceName,
-							"external-name", externalNameValue,
-							"composition-key", compositionKey,
-							"resource-key", observedResourceKey,
-						)
-					}
-				} else {
-					f.log.Info("Skipping store operation - resource not eligible in current operation mode",
+			// Resource name (metadata.name) backup is independent of operation mode
+			// because XRs and other non-managed resources don't have deletion policies
+			shouldStoreResourceName := resourceNameValue != "" && storedResourceName != resourceNameValue
+
+			if shouldStoreExternalName || shouldStoreResourceName {
+				// Create resource key for this observed resource
+				observedResourceKey := resourceName
+
+				// Build ResourceData with values to store
+				data := ResourceData{}
+				if shouldStoreExternalName {
+					data.ExternalName = externalNameValue
+					f.log.Info("Will store external name",
 						"resource", resourceName,
-						"external-name", externalNameValue,
-						"mode", operationMode,
-					)
+						"external-name", externalNameValue)
 				}
+				if shouldStoreResourceName {
+					data.ResourceName = resourceNameValue
+					f.log.Info("Will store resource name",
+						"resource", resourceName,
+						"resource-name", resourceNameValue)
+				}
+
+				newResourceData[observedResourceKey] = data
+
+				f.log.Info("Marked resource data for storage",
+					"resource", resourceName,
+					"external-name", externalNameValue,
+					"resource-name", resourceNameValue,
+					"composition-key", compositionKey,
+					"resource-key", observedResourceKey,
+				)
+			} else if !shouldProcessForStore && externalNameValue != "" {
+				f.log.Info("Skipping external name store - resource not eligible in current operation mode",
+					"resource", resourceName,
+					"mode", operationMode,
+				)
 			}
 		}
 	}
 
-	// Save any NEW external names back to the store
-	if len(newExternalNames) > 0 {
-		// Merge new external names with existing ones
-		allExternalNames := make(map[string]string)
+	// Save any NEW resource data back to the store
+	// Skip backup entirely when requireRestore is true to prevent overwriting stored data
+	if requireRestore {
+		f.log.Info("Skipping backup operations - require-restore mode is enabled")
+	} else if len(newResourceData) > 0 {
+		// Merge new resource data with existing ones
+		allResourceData := make(map[string]ResourceData)
 
 		// Start with existing data
-		if existingData, exists := externalNameStore[compositionKey]; exists {
+		if existingData, exists := resourceDataStore[compositionKey]; exists {
 			for k, v := range existingData {
-				allExternalNames[k] = v
+				allResourceData[k] = v
 			}
 		}
 
-		// Add new external names
-		for k, v := range newExternalNames {
-			allExternalNames[k] = v
+		// Merge new resource data (update existing entries or add new ones)
+		for k, newData := range newResourceData {
+			existing := allResourceData[k]
+			if newData.ExternalName != "" {
+				existing.ExternalName = newData.ExternalName
+			}
+			if newData.ResourceName != "" {
+				existing.ResourceName = newData.ResourceName
+			}
+			allResourceData[k] = existing
 		}
 
-		err := store.Save(ctx, clusterID, compositionKey, allExternalNames)
+		err := store.Save(ctx, clusterID, compositionKey, allResourceData)
 		if err != nil {
-			response.Fatal(rsp, errors.Wrapf(err, "failed to save external names to store"))
+			response.Fatal(rsp, errors.Wrapf(err, "failed to save resource data to store"))
 			return rsp, nil
 		}
-		f.log.Info("Saved updated external names to store", "composition-key", compositionKey, "new-count", len(newExternalNames), "total-count", len(allExternalNames))
+		f.log.Info("Saved updated resource data to store", "composition-key", compositionKey, "new-count", len(newResourceData), "total-count", len(allResourceData))
 
 		// Add tracking annotations to desired resources for what was successfully stored
 		for name, resource := range req.GetDesired().GetResources() {
@@ -1070,76 +1294,88 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 				// Use pipeline resource name as the stable identifier
 				resourceName := name
 
-				// Only add tracking annotations for resources that should be processed
-				if shouldProcess, exists := resourceShouldProcess[resourceName]; !exists || !shouldProcess {
+				// Check if this resource was stored in this operation
+				resourceKey := resourceName
+				storedData, wasStored := newResourceData[resourceKey]
+				if !wasStored {
 					continue
 				}
 
-				var apiVersion, kind string
-				if av := fields["apiVersion"]; av != nil {
-					apiVersion = av.GetStringValue()
-				}
-				if k := fields["kind"]; k != nil {
-					kind = k.GetStringValue()
+				// Check if resource should be processed for external name tracking
+				shouldProcess, exists := resourceShouldProcess[resourceName]
+				shouldAddExternalNameTracking := exists && shouldProcess && storedData.ExternalName != ""
+				// Resource name tracking is always allowed (independent of operation mode)
+				shouldAddResourceNameTracking := storedData.ResourceName != ""
+
+				if !shouldAddExternalNameTracking && !shouldAddResourceNameTracking {
+					continue
 				}
 
-				// Check if this resource was stored in this operation (only for NEW external names)
-				resourceKey := fmt.Sprintf("%s/%s/%s", apiVersion, kind, resourceName)
-				if storedValue, wasStored := newExternalNames[resourceKey]; wasStored {
-					// Add tracking annotation to the desired resource
-
-					// Ensure metadata exists
-					if fields["metadata"] == nil {
-						fields["metadata"] = &structpb.Value{
-							Kind: &structpb.Value_StructValue{
-								StructValue: &structpb.Struct{
-									Fields: make(map[string]*structpb.Value),
-								},
+				// Ensure metadata exists
+				if fields["metadata"] == nil {
+					fields["metadata"] = &structpb.Value{
+						Kind: &structpb.Value_StructValue{
+							StructValue: &structpb.Struct{
+								Fields: make(map[string]*structpb.Value),
 							},
-						}
+						},
 					}
+				}
 
-					if metadata := fields["metadata"]; metadata != nil {
-						if metadataStruct := metadata.GetStructValue(); metadataStruct != nil {
-							metadataFields := metadataStruct.GetFields()
+				if metadata := fields["metadata"]; metadata != nil {
+					if metadataStruct := metadata.GetStructValue(); metadataStruct != nil {
+						metadataFields := metadataStruct.GetFields()
 
-							// Ensure annotations exist
-							if metadataFields["annotations"] == nil {
-								metadataFields["annotations"] = &structpb.Value{
-									Kind: &structpb.Value_StructValue{
-										StructValue: &structpb.Struct{
-											Fields: make(map[string]*structpb.Value),
-										},
+						// Ensure annotations exist
+						if metadataFields["annotations"] == nil {
+							metadataFields["annotations"] = &structpb.Value{
+								Kind: &structpb.Value_StructValue{
+									StructValue: &structpb.Struct{
+										Fields: make(map[string]*structpb.Value),
 									},
-								}
+								},
+							}
+						}
+
+						if annotationsStruct := metadataFields["annotations"].GetStructValue(); annotationsStruct != nil {
+							if annotationsStruct.Fields == nil {
+								annotationsStruct.Fields = make(map[string]*structpb.Value)
 							}
 
-							if annotationsStruct := metadataFields["annotations"].GetStructValue(); annotationsStruct != nil {
-								// Ensure the Fields map exists
-								if annotationsStruct.Fields == nil {
-									annotationsStruct.Fields = make(map[string]*structpb.Value)
-								}
-
-								// Add tracking annotation
+							// Add tracking annotations for external name if stored (respects operation mode)
+							if shouldAddExternalNameTracking {
 								annotationsStruct.Fields[StoredExternalNameAnnotation] = &structpb.Value{
 									Kind: &structpb.Value_StringValue{
-										StringValue: storedValue,
+										StringValue: storedData.ExternalName,
 									},
 								}
-
-								// Add timestamp annotation
 								annotationsStruct.Fields[ExternalNameStoredAnnotation] = &structpb.Value{
 									Kind: &structpb.Value_StringValue{
 										StringValue: timestamp,
 									},
 								}
-
-								f.log.Info("Added tracking and timestamp annotations after successful store",
-									"resource", resourceName,
-									"stored-external-name", storedValue,
-									"timestamp", timestamp,
-								)
 							}
+
+							// Add tracking annotations for resource name if stored (independent of operation mode)
+							if shouldAddResourceNameTracking {
+								annotationsStruct.Fields[StoredResourceNameAnnotation] = &structpb.Value{
+									Kind: &structpb.Value_StringValue{
+										StringValue: storedData.ResourceName,
+									},
+								}
+								annotationsStruct.Fields[ResourceNameStoredAnnotation] = &structpb.Value{
+									Kind: &structpb.Value_StringValue{
+										StringValue: timestamp,
+									},
+								}
+							}
+
+							f.log.Info("Added tracking annotations after successful store",
+								"resource", resourceName,
+								"stored-external-name", storedData.ExternalName,
+								"stored-resource-name", storedData.ResourceName,
+								"timestamp", timestamp,
+							)
 						}
 					}
 				}

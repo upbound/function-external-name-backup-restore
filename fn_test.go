@@ -20,7 +20,8 @@ func TestRunFunction(t *testing.T) {
 	}
 	type want struct {
 		err                   error
-		storeContains         map[string]string            // resourceKey -> externalName that should be in store after test
+		expectFatal           bool                         // expect function to return a fatal error in response
+		storeContains         map[string]ResourceData      // resourceKey -> ResourceData that should be in store after test
 		storeNotContains      []string                     // resourceKeys that should NOT be in store after test
 		desiredAnnotations    map[string]map[string]string // resourceName -> annotation -> value
 		desiredNotAnnotations map[string][]string          // resourceName -> annotations that should NOT exist
@@ -30,7 +31,7 @@ func TestRunFunction(t *testing.T) {
 		reason string
 		args   args
 		want   want
-		setup  func(*MockExternalNameStore) // Setup function to prepare mock store
+		setup  func(*MockResourceStore) // Setup function to prepare mock store
 	}{
 		"StoreExternalNameForOrphanedResource": {
 			reason: "Should store external name for orphaned resources with external-name annotation",
@@ -105,8 +106,8 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket": "my-test-bucket",
+				storeContains: map[string]ResourceData{
+					"bucket": {ExternalName: "my-test-bucket"},
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
@@ -119,11 +120,11 @@ func TestRunFunction(t *testing.T) {
 
 		"RestoreExternalNameFromStore": {
 			reason: "Should restore external name from store for orphaned resources without external-name",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "stored-bucket-name",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "stored-bucket-name"},
 					})
 			},
 			args: args{
@@ -193,13 +194,670 @@ func TestRunFunction(t *testing.T) {
 			},
 		},
 
-		"DeleteExternalNameOnPolicyChange": {
-			reason: "Should delete external name from store when resource changes from Orphan to Delete policy",
-			setup: func(store *MockExternalNameStore) {
+		"RestoreExternalNameWithKindOverride": {
+			reason: "Should restore external name using overridden kind for composition key lookup (migration scenario)",
+			setup: func(store *MockResourceStore) {
+				// Store data under the OLD kind (XExample)
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "bucket-to-delete",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-from-old-kind"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							// NEW kind (Example) with override-kind annotation pointing to OLD kind (XExample)
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "Example",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/override-kind": "XExample"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "Example",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/override-kind": "XExample"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				desiredAnnotations: map[string]map[string]string{
+					"bucket": {
+						"crossplane.io/external-name":             "bucket-from-old-kind",
+						"fn.crossplane.io/external-name-restored": "", // timestamp will vary
+					},
+				},
+			},
+		},
+
+		"RestoreExternalNameWithNamespaceOverride": {
+			reason: "Should restore external name using overridden namespace for composition key lookup (v1->v2 migration scenario)",
+			setup: func(store *MockResourceStore) {
+				// Store data under the OLD namespace format (none/none for cluster-scoped v1)
+				store.Save(context.Background(), "default",
+					"none/none/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-from-v1"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							// v2 namespaced XR with override-namespace annotation pointing to "none"
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"namespace": "team-a",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/override-namespace": "none"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"namespace": "team-a",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/override-namespace": "none"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				desiredAnnotations: map[string]map[string]string{
+					"bucket": {
+						"crossplane.io/external-name":             "bucket-from-v1",
+						"fn.crossplane.io/external-name-restored": "", // timestamp will vary
+					},
+				},
+			},
+		},
+
+		"NamespacedXRWithoutClaim": {
+			reason: "Should use XR namespace in composition key when no claim labels exist (v2 native namespaced XR)",
+			setup: func(store *MockResourceStore) {
+				// Store data under the XR namespace (team-a) format
+				store.Save(context.Background(), "default",
+					"team-a/none/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-from-team-a"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							// v2 namespaced XR WITHOUT claim labels - should use XR namespace
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"namespace": "team-a",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"namespace": "team-a",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				desiredAnnotations: map[string]map[string]string{
+					"bucket": {
+						"crossplane.io/external-name":             "bucket-from-team-a",
+						"fn.crossplane.io/external-name-restored": "", // timestamp will vary
+					},
+				},
+			},
+		},
+
+		"RequireRestoreFailsWhenNoData": {
+			reason: "Should fail when require-restore is enabled but no external names found in store",
+			setup:  func(store *MockResourceStore) {},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/require-restore": "true"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/require-restore": "true"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err:         nil, // error is in response, not return value
+				expectFatal: true,
+			},
+		},
+
+		"RequireRestoreSucceedsWhenDataExists": {
+			reason: "Should succeed when require-restore is enabled and external names exist in store",
+			setup: func(store *MockResourceStore) {
+				store.Save(context.Background(), "default",
+					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-restored"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/require-restore": "true"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/require-restore": "true"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				desiredAnnotations: map[string]map[string]string{
+					"bucket": {
+						"crossplane.io/external-name":             "bucket-restored",
+						"fn.crossplane.io/external-name-restored": "", // timestamp will vary
+					},
+				},
+			},
+		},
+
+		"RequireRestoreBypassesOperationMode": {
+			reason: "Should restore external names when require-restore is enabled even if resource doesn't meet orphan criteria",
+			setup: func(store *MockResourceStore) {
+				store.Save(context.Background(), "default",
+					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-restored", ResourceName: "bucket-abc123"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/operation-mode": "only-orphaned",
+										"fn.crossplane.io/require-restore": "true"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/operation-mode": "only-orphaned",
+										"fn.crossplane.io/require-restore": "true"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Delete",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				desiredAnnotations: map[string]map[string]string{
+					"bucket": {
+						"crossplane.io/external-name":             "bucket-restored",
+						"fn.crossplane.io/external-name-restored": "",
+						"fn.crossplane.io/stored-resource-name":   "bucket-abc123",
+					},
+				},
+			},
+		},
+
+		"RequireRestoreFailsWhenResourceMissing": {
+			reason: "Should fail when require-restore is enabled but a desired resource has no data in store",
+			setup: func(store *MockResourceStore) {
+				store.Save(context.Background(), "default",
+					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-restored"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/require-restore": "true"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/require-restore": "true"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+							"missing-resource": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err:         nil,
+				expectFatal: true,
+			},
+		},
+
+		"ResourceNameBackupIndependentOfOperationMode": {
+			reason: "Should backup metadata.name for all resources but only backup external-name for orphaned resources",
+			setup:  func(store *MockResourceStore) {},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/operation-mode": "only-orphaned"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"non-orphaned-bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"metadata": {
+										"name": "non-orphaned-bucket-abc123",
+										"annotations": {
+											"crossplane.io/external-name": "my-non-orphaned-bucket"
+										}
+									},
+									"spec": {
+										"deletionPolicy": "Delete",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+							"orphaned-bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"metadata": {
+										"name": "orphaned-bucket-xyz789",
+										"annotations": {
+											"crossplane.io/external-name": "my-orphaned-bucket"
+										}
+									},
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/operation-mode": "only-orphaned"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"non-orphaned-bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Delete",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+							"orphaned-bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				storeContains: map[string]ResourceData{
+					"non-orphaned-bucket": {ResourceName: "non-orphaned-bucket-abc123", ExternalName: ""},
+					"orphaned-bucket":     {ResourceName: "orphaned-bucket-xyz789", ExternalName: "my-orphaned-bucket"},
+				},
+			},
+		},
+
+		"DeleteExternalNameOnPolicyChange": {
+			reason: "Should delete external name from store when resource changes from Orphan to Delete policy",
+			setup: func(store *MockResourceStore) {
+				store.Save(context.Background(), "default",
+					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-to-delete"},
 					})
 			},
 			args: args{
@@ -274,7 +932,7 @@ func TestRunFunction(t *testing.T) {
 			want: want{
 				err: nil,
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket",
+					"bucket",
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
@@ -364,18 +1022,18 @@ func TestRunFunction(t *testing.T) {
 			want: want{
 				err: nil,
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket",
+					"bucket",
 				},
 			},
 		},
 
 		"AnnotationFallbackDesiredToObserved": {
 			reason: "Should find stored-external-name annotation in observed resource when not in desired",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "bucket-to-delete",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-to-delete"},
 					})
 			},
 			args: args{
@@ -450,7 +1108,7 @@ func TestRunFunction(t *testing.T) {
 			want: want{
 				err: nil,
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket",
+					"bucket",
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
@@ -462,11 +1120,11 @@ func TestRunFunction(t *testing.T) {
 
 		"DeletionPolicyFallbackDesiredToObserved": {
 			reason: "Should fallback to observed resource spec when desired resource has no spec",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "bucket-to-delete",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-to-delete"},
 					})
 			},
 			args: args{
@@ -541,7 +1199,7 @@ func TestRunFunction(t *testing.T) {
 			want: want{
 				err: nil,
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket",
+					"bucket",
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
@@ -626,18 +1284,18 @@ func TestRunFunction(t *testing.T) {
 			want: want{
 				err: nil,
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket", // Should not be stored again
+					"bucket", // Should not be stored again
 				},
 			},
 		},
 
 		"SkipRestorationWhenExternalNameExists": {
 			reason: "Should skip restoration when desired resource already has external-name annotation",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket": "stored-bucket-name",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "stored-bucket-name"},
 					})
 			},
 			args: args{
@@ -791,8 +1449,8 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket": "delete-policy-bucket",
+				storeContains: map[string]ResourceData{
+					"bucket": {ExternalName: "delete-policy-bucket"},
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket": {
@@ -872,8 +1530,8 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket": "standalone-bucket",
+				storeContains: map[string]ResourceData{
+					"bucket": {ExternalName: "standalone-bucket"},
 				},
 			},
 		},
@@ -951,8 +1609,8 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"rds.aws.upbound.io/v1beta1/Instance/database": "prod-db-instance",
+				storeContains: map[string]ResourceData{
+					"database": {ExternalName: "prod-db-instance"},
 				},
 			},
 		},
@@ -1034,12 +1692,12 @@ func TestRunFunction(t *testing.T) {
 
 		"MultiResourceMixedOperations": {
 			reason: "Should handle storage, restoration, and deletion simultaneously for different resources",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-restore": "old-bucket-name",
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-delete":  "bucket-to-delete",
+					map[string]ResourceData{
+						"bucket-restore": {ExternalName: "old-bucket-name"},
+						"bucket-delete":  {ExternalName: "bucket-to-delete"},
 					})
 			},
 			args: args{
@@ -1144,12 +1802,12 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-store":   "new-bucket-to-store",
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-restore": "old-bucket-name", // Should remain from setup
+				storeContains: map[string]ResourceData{
+					"bucket-store":   {ExternalName: "new-bucket-to-store"},
+					"bucket-restore": {ExternalName: "old-bucket-name"}, // Should remain from setup
 				},
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-delete", // Should be deleted
+					"bucket-delete", // Should be deleted
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket-store": {
@@ -1175,12 +1833,12 @@ func TestRunFunction(t *testing.T) {
 
 		"PartialCompositionUpdate": {
 			reason: "Should handle partial updates where some resources change while others remain the same",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-unchanged": "unchanged-bucket",
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-changing":  "old-changing-bucket",
+					map[string]ResourceData{
+						"bucket-unchanged": {ExternalName: "unchanged-bucket"},
+						"bucket-changing":  {ExternalName: "old-changing-bucket"},
 					})
 			},
 			args: args{
@@ -1276,9 +1934,9 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-unchanged": "unchanged-bucket",
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-changing":  "new-changing-bucket", // Should be updated
+				storeContains: map[string]ResourceData{
+					"bucket-unchanged": {ExternalName: "unchanged-bucket"},
+					"bucket-changing":  {ExternalName: "new-changing-bucket"}, // Should be updated
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket-changing": {
@@ -1291,12 +1949,12 @@ func TestRunFunction(t *testing.T) {
 
 		"ResourceTransitioningPolicies": {
 			reason: "Should handle resources transitioning between orphan and delete policies correctly",
-			setup: func(store *MockExternalNameStore) {
+			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
-					map[string]string{
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-orphan-to-delete": "bucket1",
-						"s3.aws.upbound.io/v1beta1/Bucket/bucket-delete-to-orphan": "bucket2",
+					map[string]ResourceData{
+						"bucket-orphan-to-delete": {ExternalName: "bucket1"},
+						"bucket-delete-to-orphan": {ExternalName: "bucket2"},
 					})
 			},
 			args: args{
@@ -1391,11 +2049,11 @@ func TestRunFunction(t *testing.T) {
 			},
 			want: want{
 				err: nil,
-				storeContains: map[string]string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-delete-to-orphan": "bucket2", // Should be stored
+				storeContains: map[string]ResourceData{
+					"bucket-delete-to-orphan": {ExternalName: "bucket2"}, // Should be stored
 				},
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket-orphan-to-delete", // Should be deleted
+					"bucket-orphan-to-delete", // Should be deleted
 				},
 				desiredAnnotations: map[string]map[string]string{
 					"bucket-orphan-to-delete": {
@@ -1465,7 +2123,7 @@ func TestRunFunction(t *testing.T) {
 			want: want{
 				err: nil,
 				storeNotContains: []string{
-					"s3.aws.upbound.io/v1beta1/Bucket/bucket", // Should not be stored without enable annotation
+					"bucket", // Should not be stored without enable annotation
 				},
 			},
 		},
@@ -1474,9 +2132,9 @@ func TestRunFunction(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			// Create fresh mock store for each test
-			mockStore := &MockExternalNameStore{
+			mockStore := &MockResourceStore{
 				mu:   sync.RWMutex{},
-				data: make(map[string]map[string]map[string]string),
+				data: make(map[string]map[string]map[string]ResourceData),
 			}
 			SetTestStore(mockStore)
 			defer ClearTestStore()
@@ -1503,13 +2161,24 @@ func TestRunFunction(t *testing.T) {
 				return
 			}
 
-			// Check that the function succeeded (no fatal errors)
+			// Check fatal error expectations
+			hasFatal := false
 			if rsp.GetResults() != nil {
 				for _, result := range rsp.GetResults() {
 					if result.GetSeverity() == fnv1.Severity_SEVERITY_FATAL {
-						t.Errorf("%s\nFunction returned fatal error: %s", tc.reason, result.GetMessage())
+						hasFatal = true
+						if !tc.want.expectFatal {
+							t.Errorf("%s\nFunction returned unexpected fatal error: %s", tc.reason, result.GetMessage())
+						}
 					}
 				}
+			}
+			if tc.want.expectFatal && !hasFatal {
+				t.Errorf("%s\nExpected fatal error but none was returned", tc.reason)
+				return
+			}
+			if tc.want.expectFatal {
+				return // Skip store checks when expecting fatal
 			}
 
 			// Check store state - generate expected composition key based on test case
@@ -1519,6 +2188,15 @@ func TestRunFunction(t *testing.T) {
 				compositionKey = "none/none/example.io/v1alpha1/XExample/test-xr"
 			case "DifferentXRTypes":
 				compositionKey = "production/my-database/platform.example.com/v1beta2/XDatabase/my-db-xr"
+			case "RestoreExternalNameWithKindOverride":
+				// Uses overridden kind (XExample) instead of actual kind (Example)
+				compositionKey = "default/test-claim/example.io/v1alpha1/XExample/test-xr"
+			case "RestoreExternalNameWithNamespaceOverride":
+				// Uses overridden namespace (none) for v1->v2 migration
+				compositionKey = "none/none/example.io/v1alpha1/XExample/test-xr"
+			case "NamespacedXRWithoutClaim":
+				// Uses XR namespace (team-a) when no claim labels exist
+				compositionKey = "team-a/none/example.io/v1alpha1/XExample/test-xr"
 			default:
 				compositionKey = "default/test-claim/example.io/v1alpha1/XExample/test-xr"
 			}

@@ -9,10 +9,26 @@ In a typical GitOps setup, your Crossplane compositions and claims are stored in
 **Cloud resources with auto-generated names** cannot be restored from Git alone because their external names aren't predetermined.
 
 **Common Examples:**
-- **AWS Networking**: VPCs (`vpc-0123456789abcdef0`), subnets (`subnet-0abc123def456789`), security groups (`sg-0987654321fedcba`) 
+- **AWS Networking**: VPCs (`vpc-0123456789abcdef0`), subnets (`subnet-0abc123def456789`), security groups (`sg-0987654321fedcba`)
 - **Storage**: S3 buckets with random suffixes, EBS volumes
 - **Databases**: RDS instances with generated identifiers
 - **Load Balancers**: ELBs with auto-generated names
+
+## XR Name Backup (Nested Compositions)
+
+This function also supports backing up **Composite Resource (XR) names** for nested compositions. When XRs are composed as part of other compositions, their `metadata.name` is generated deterministically from the parent UID:
+
+```
+XR name = SHA256(parentUID + compositionResourceName)[:12]
+```
+
+**The Problem**: If the parent UID changes (e.g., during migration or recreation), all child XR names change, breaking references to existing resources.
+
+**The Solution**: This function backs up `metadata.name` for all resources (independent of operation mode), allowing XRs to retain their original names even when parent UIDs change.
+
+**Key difference from external name backup:**
+- **External name backup**: Respects operation mode (only-orphaned vs all-resources)
+- **Resource name backup**: Always active for all resources (XRs don't have deletion policies)
 
 ## Overview
 
@@ -25,15 +41,17 @@ When you restore your GitOps configuration from Git:
 4. **With this function**: External names are restored from backup → Crossplane adopts existing cloud resources
 
 This function solves the GitOps gap by:
-- **Backing up** external names from observed resources to DynamoDB during normal operations
-- **Restoring** external names to desired resources during GitOps recovery
-- **Focusing on orphaned resources** (the ones that survive cluster disasters)
+- **Backing up** external names and resource names from observed resources to DynamoDB during normal operations
+- **Restoring** external names and resource names to desired resources during GitOps recovery
+- **Focusing on orphaned resources** for external names (the ones that survive cluster disasters)
+- **Backing up all resource names** regardless of operation mode (for XRs in nested compositions)
 - **Providing audit trails** for compliance and troubleshooting
 
 ## Features
 
-- 🔄 **Automatic Backup & Restore**: Seamlessly handles external name persistence
-- 🎯 **Operation Modes**: Choose between processing only orphaned resources or all resources
+- 🔄 **Automatic Backup & Restore**: Seamlessly handles external name and resource name persistence
+- 🎯 **Operation Modes**: Choose between processing only orphaned resources or all resources for external names
+- 📦 **XR Name Backup**: Always backs up `metadata.name` for all resources (independent of operation mode)
 - 📊 **AWS DynamoDB Storage**: Reliable, scalable external storage backend
 - 🏷️ **Annotation-Based Control**: Fine-grained control through XR annotations
 - ⚡ **Performance Optimized**: Tracking annotations prevent unnecessary writes
@@ -143,6 +161,15 @@ Configuration is provided through XR annotations. All configuration is specified
 | `fn.crossplane.io/dynamodb-region` | `"us-west-2"` | AWS region for DynamoDB |
 | `fn.crossplane.io/operation-mode` | `"only-orphaned"` | Operation mode (`only-orphaned` or `all-resources`) |
 
+### Optional Annotations
+
+| Annotation | Example | Description |
+|------------|---------|-------------|
+| `fn.crossplane.io/override-kind` | `"XNetwork"` | Override XR kind in composition key lookup (for migrations) |
+| `fn.crossplane.io/override-namespace` | `"none"` | Override namespace in composition key lookup (for migrations from cluster-scoped to namespaced XRs) |
+| `fn.crossplane.io/require-restore` | `"true"` | Enable restore-only mode: always restore from store regardless of operation mode, skip backup, fail if any resource is missing from store |
+| `fn.crossplane.io/purge-external-store` | `"true"` | Delete all stored external names for this composition |
+
 ### AWS Credentials
 
 AWS credentials are provided via Crossplane's credential management system. The function supports:
@@ -181,21 +208,26 @@ spec:
 
 If a resource protected by this function gets accidentally deleted, you **must purge the store** when creating a new composite or claim that would result in the same composition key.
 
-**Composition keys are formed as:** `{claim-namespace}/{claim-name}/{xr-apiVersion}/{xr-kind}/{xr-name}`
+**Composition keys are formed as:** `{namespace}/{claim-name}/{xr-apiVersion}/{xr-kind}/{xr-name}`
 
-The key components are determined as follows:
-- **For Composites created by Claims**: Uses the claim's namespace and name from labels
-- **For Direct Composites** (not created by claims): Uses `"none"` for both claim-namespace and claim-name
+The namespace component is determined as follows:
+- **For Composites created by Claims**: Uses the claim's namespace from labels
+- **For v2 Namespaced XRs** (without claims): Uses the XR's `metadata.namespace`
+- **For v1 Cluster-scoped XRs** (without claims): Uses `"none"`
 
 Examples:
 
 **Claim-based Composite:**
-- Claim: `my-database` in namespace `production` 
+- Claim: `my-database` in namespace `production`
 - XR: `my-database-xyz` of type `aws.platform.upbound.io/v1alpha1/XRDS`
 - **Key:** `production/my-database/aws.platform.upbound.io/v1alpha1/XRDS/my-database-xyz`
 
-**Direct Composite:**
-- XR: `standalone-db` of type `aws.platform.upbound.io/v1alpha1/XRDS` (no claim)
+**v2 Namespaced XR (without claim):**
+- XR: `standalone-db` in namespace `team-a` of type `aws.platform.upbound.io/v1alpha1/XRDS`
+- **Key:** `team-a/none/aws.platform.upbound.io/v1alpha1/XRDS/standalone-db`
+
+**v1 Cluster-scoped XR (without claim):**
+- XR: `standalone-db` of type `aws.platform.upbound.io/v1alpha1/XRDS` (cluster-scoped, no namespace)
 - **Key:** `none/none/aws.platform.upbound.io/v1alpha1/XRDS/standalone-db`
 
 If you need to recreate a deleted composite, purge the store first:
@@ -249,13 +281,86 @@ metadata:
 ### Purge Stored Data
 
 ```yaml
-apiVersion: example.com/v1alpha1  
+apiVersion: example.com/v1alpha1
 kind: MyXR
 metadata:
   annotations:
     fn.crossplane.io/purge-external-store: "true"
 # Function will delete all stored external names for this composition
 ```
+
+### Migration from v1 Cluster-Scoped to v2 Namespaced XRs
+
+When migrating from v1 cluster-scoped XRs to v2 namespaced XRs, the composition key format changes. Use override annotations to look up external names stored under the old format:
+
+```yaml
+apiVersion: aws.platform.upbound.io/v1alpha1
+kind: Network  # New v2 kind (namespaced)
+metadata:
+  name: my-network
+  namespace: team-a  # v2 namespaced XR
+  annotations:
+    fn.crossplane.io/enable-external-store: "true"
+    fn.crossplane.io/override-kind: "XNetwork"      # Look up keys stored under v1 kind
+    fn.crossplane.io/override-namespace: "none"      # Look up keys stored under v1 cluster-scoped format
+    fn.crossplane.io/require-restore: "true"         # Safety: fail if no data found
+```
+
+**Why these annotations are needed:**
+
+| Scenario | Key Format | Annotations |
+|----------|-----------|-------------|
+| v1 cluster-scoped export | `none/none/.../XNetwork/my-network` | (original backup) |
+| v2 namespaced import | `team-a/none/.../Network/my-network` | (default, wrong key) |
+| v2 with overrides | `none/none/.../XNetwork/my-network` | `override-kind`, `override-namespace` |
+
+**The `require-restore` mode:**
+
+When set to `"true"`, the function operates in **restore-only mode** with the following behavior:
+
+1. **Bypass operation mode for restore**: External names and resource names are restored from the store regardless of whether resources meet orphan criteria. This is essential for migrations where the new XR may not have matching `deletionPolicy` or `managementPolicies` set yet.
+
+2. **Skip backup operations**: The function will NOT write any new data to the store, preventing accidental overwrites of existing backup data.
+
+3. **Fail if any resource is missing**: The function will fail with a fatal error if:
+   - No data exists in the store for the composition key
+   - Any desired resource doesn't have corresponding data in the store
+
+This prevents accidental creation of duplicate cloud resources when:
+- Override annotations are misconfigured
+- The store doesn't contain data for the expected key
+- Migration is attempted before backup data exists
+- The composition has more resources than were previously backed up
+
+Example error messages:
+```
+require-restore is enabled but no resource data found in store for composition key "none/none/aws.platform.upbound.io/v1alpha1/XNetwork/my-network".
+Check that override-kind and override-namespace annotations are correct, or remove require-restore annotation.
+```
+
+```
+require-restore is enabled but no data found in store for resource "vpc" (composition key: "none/none/aws.platform.upbound.io/v1alpha1/XNetwork/my-network").
+All resources must have data in the store when require-restore is set.
+```
+
+### Override Kind for Migrations
+
+When migrating between composition versions where only the XR kind changes (e.g., `XNetwork` to `Network`), use the `override-kind` annotation to look up external names stored under the old kind:
+
+```yaml
+apiVersion: aws.platform.upbound.io/v1alpha1
+kind: Network  # New v2 kind
+metadata:
+  name: my-network
+  annotations:
+    fn.crossplane.io/enable-external-store: "true"
+    fn.crossplane.io/override-kind: "XNetwork"  # Look up keys stored under v1 kind
+```
+
+This is useful for migrations where:
+- The XRD kind changes between versions (e.g., `XNetwork` → `Network`)
+- You want to restore external names backed up from the previous version
+- The composition key format includes the kind: `{namespace}/{claim-name}/{apiVersion}/{kind}/{name}`
 
 ## Deletion Behavior
 
@@ -271,7 +376,7 @@ This deletion annotation helps track which resources were processed for deletion
 
 ### Data Storage Structure
 
-External names are stored in DynamoDB with this structure:
+Resource data is stored in DynamoDB with this structure:
 
 ```
 Primary Key: cluster_id + composition_key
@@ -281,36 +386,65 @@ Data:
 {
   "cluster_id": "my-cluster",
   "composition_key": "default/my-claim/example.com/v1alpha1/MyXR/my-xr",
-  "external_names": {
-    "s3.aws.upbound.io/v1beta1/Bucket/my-bucket": "actual-bucket-name-12345",
-    "ec2.aws.upbound.io/v1beta1/VPC/my-vpc": "vpc-0123456789abcdef0"
+  "resources": {
+    "my-bucket": {
+      "externalName": "actual-bucket-name-12345",
+      "resourceName": "my-bucket-abc123"
+    },
+    "my-vpc": {
+      "externalName": "vpc-0123456789abcdef0",
+      "resourceName": "my-vpc-def456"
+    },
+    "nested-xr": {
+      "resourceName": "nested-xr-xyz789"
+    }
   }
 }
 ```
 
+**Note:** The `resourceName` field stores the `metadata.name` of the composed resource. Resources may have only `externalName`, only `resourceName`, or both.
+
 ### Function Flow
 
-1. **Load Phase**: Load existing external names from DynamoDB
-2. **Desired Resources Processing**: 
-   - Check each resource against operation mode criteria
-   - Restore external names from store if available
+1. **Load Phase**: Load existing resource data from DynamoDB
+2. **Deletion Check**: Check desired resources for deletion criteria (policy change from Orphan to Delete)
+3. **Desired Resources Processing**:
+   - Check each resource against operation mode criteria (for external names)
+   - Restore external names from store if available and not already set
+   - Restore resource names (`metadata.name`) from store if not already set
    - Add tracking annotations
-3. **Observed Resources Processing**:
-   - Check each resource against operation mode criteria  
-   - Collect external names from resources for storage
+4. **Observed Resources Processing**:
+   - Collect external names from resources (respects operation mode)
+   - Collect resource names from all resources (independent of operation mode)
    - Use tracking annotations to optimize writes
-4. **Store Phase**: Save collected external names back to DynamoDB
+5. **Store Phase**: Save collected resource data back to DynamoDB
 
 ### Function Annotations
 
 The function uses several annotations to track state and optimize performance:
 
-**Tracking Annotations** (added during storage):
+**External Name Tracking Annotations** (added during storage):
 ```yaml
 metadata:
   annotations:
     fn.crossplane.io/stored-external-name: "actual-external-name"
     fn.crossplane.io/external-name-stored: "2024-08-06T12:00:00Z"
+```
+
+**Resource Name Tracking Annotations** (added during storage):
+```yaml
+metadata:
+  annotations:
+    fn.crossplane.io/stored-resource-name: "my-resource-abc123"
+    fn.crossplane.io/resource-name-stored: "2024-08-06T12:00:00Z"
+```
+
+**Restoration Annotations** (added during restore):
+```yaml
+metadata:
+  annotations:
+    fn.crossplane.io/external-name-restored: "2024-08-06T12:15:00Z"
+    fn.crossplane.io/resource-name-restored: "2024-08-06T12:15:00Z"
 ```
 
 **Deletion Annotation** (added during deletion):
@@ -321,7 +455,7 @@ metadata:
 ```
 
 These annotations serve multiple purposes:
-- **Performance Optimization**: Tracking annotations prevent unnecessary DynamoDB writes when external names haven't changed
+- **Performance Optimization**: Tracking annotations prevent unnecessary DynamoDB writes when values haven't changed
 - **Audit Trail**: Timestamps provide visibility into when operations occurred
 - **State Management**: Help the function understand what has been processed
 

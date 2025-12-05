@@ -74,19 +74,27 @@ func NewDynamoDBStore(ctx context.Context, log logging.Logger, tableName, region
 	return store, nil
 }
 
-// Save stores external names for an entire composition in DynamoDB
-func (d *DynamoDBStore) Save(ctx context.Context, clusterID, compositionKey string, externalNames map[string]string) error {
-	// Create the external names map as DynamoDB attribute
-	externalNamesAttr := make(map[string]types.AttributeValue)
-	for resourceKey, externalName := range externalNames {
-		externalNamesAttr[resourceKey] = &types.AttributeValueMemberS{Value: externalName}
+// Save stores resource data for an entire composition in DynamoDB
+func (d *DynamoDBStore) Save(ctx context.Context, clusterID, compositionKey string, resources map[string]ResourceData) error {
+	// Create the resources map as DynamoDB attribute
+	resourcesAttr := make(map[string]types.AttributeValue)
+	for resourceKey, data := range resources {
+		// Each resource is stored as a nested map with externalName and resourceName
+		resourceMap := make(map[string]types.AttributeValue)
+		if data.ExternalName != "" {
+			resourceMap["externalName"] = &types.AttributeValueMemberS{Value: data.ExternalName}
+		}
+		if data.ResourceName != "" {
+			resourceMap["resourceName"] = &types.AttributeValueMemberS{Value: data.ResourceName}
+		}
+		resourcesAttr[resourceKey] = &types.AttributeValueMemberM{Value: resourceMap}
 	}
 
 	// Create the item
 	item := map[string]types.AttributeValue{
 		"cluster_id":      &types.AttributeValueMemberS{Value: clusterID},
 		"composition_key": &types.AttributeValueMemberS{Value: compositionKey},
-		"external_names":  &types.AttributeValueMemberM{Value: externalNamesAttr},
+		"resources":       &types.AttributeValueMemberM{Value: resourcesAttr},
 	}
 
 	// Put item to DynamoDB
@@ -96,19 +104,19 @@ func (d *DynamoDBStore) Save(ctx context.Context, clusterID, compositionKey stri
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to save external names to DynamoDB: %w", err)
+		return fmt.Errorf("failed to save resource data to DynamoDB: %w", err)
 	}
 
-	d.log.Info("Saved external names to DynamoDB",
+	d.log.Info("Saved resource data to DynamoDB",
 		"cluster-id", clusterID,
 		"composition-key", compositionKey,
-		"count", len(externalNames))
+		"count", len(resources))
 
 	return nil
 }
 
-// Load retrieves all external names for a composition from DynamoDB
-func (d *DynamoDBStore) Load(ctx context.Context, clusterID, compositionKey string) (map[string]string, error) {
+// Load retrieves all resource data for a composition from DynamoDB
+func (d *DynamoDBStore) Load(ctx context.Context, clusterID, compositionKey string) (map[string]ResourceData, error) {
 	// Get the specific item for this cluster_id and composition_key
 	result, err := d.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(d.tableName),
@@ -124,28 +132,35 @@ func (d *DynamoDBStore) Load(ctx context.Context, clusterID, compositionKey stri
 
 	// If no item found, return empty map
 	if result.Item == nil {
-		d.log.Info("No external names found in DynamoDB",
+		d.log.Info("No resource data found in DynamoDB",
 			"cluster-id", clusterID,
 			"composition-key", compositionKey)
-		return make(map[string]string), nil
+		return make(map[string]ResourceData), nil
 	}
 
-	// Extract external names from the item
-	externalNames := make(map[string]string)
-	if externalNamesAttr, ok := result.Item["external_names"].(*types.AttributeValueMemberM); ok {
-		for resourceKey, externalNameAttr := range externalNamesAttr.Value {
-			if externalNameStr, ok := externalNameAttr.(*types.AttributeValueMemberS); ok {
-				externalNames[resourceKey] = externalNameStr.Value
+	resources := make(map[string]ResourceData)
+
+	if resourcesAttr, ok := result.Item["resources"].(*types.AttributeValueMemberM); ok {
+		for resourceKey, resourceAttr := range resourcesAttr.Value {
+			data := ResourceData{}
+			if resourceMap, ok := resourceAttr.(*types.AttributeValueMemberM); ok {
+				if externalName, ok := resourceMap.Value["externalName"].(*types.AttributeValueMemberS); ok {
+					data.ExternalName = externalName.Value
+				}
+				if resourceName, ok := resourceMap.Value["resourceName"].(*types.AttributeValueMemberS); ok {
+					data.ResourceName = resourceName.Value
+				}
 			}
+			resources[resourceKey] = data
 		}
 	}
 
-	d.log.Info("Loaded external names from DynamoDB",
+	d.log.Info("Loaded resource data from DynamoDB",
 		"cluster-id", clusterID,
 		"composition-key", compositionKey,
-		"count", len(externalNames))
+		"count", len(resources))
 
-	return externalNames, nil
+	return resources, nil
 }
 
 // Purge removes all external names for a composition from DynamoDB
@@ -170,27 +185,27 @@ func (d *DynamoDBStore) Purge(ctx context.Context, clusterID, compositionKey str
 	return nil
 }
 
-// DeleteResource removes a specific resource's external name from a composition in DynamoDB
+// DeleteResource removes a specific resource's data from a composition in DynamoDB
 func (d *DynamoDBStore) DeleteResource(ctx context.Context, clusterID, compositionKey, resourceKey string) error {
 	d.log.Info("Attempting to delete resource from DynamoDB",
 		"cluster-id", clusterID,
 		"composition-key", compositionKey,
 		"resource-key", resourceKey)
 
-	// Use UpdateItem to remove the specific resource key from the external_names map
+	// Use UpdateItem to remove the specific resource key from the resources map
 	_, err := d.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(d.tableName),
 		Key: map[string]types.AttributeValue{
 			"cluster_id":      &types.AttributeValueMemberS{Value: clusterID},
 			"composition_key": &types.AttributeValueMemberS{Value: compositionKey},
 		},
-		UpdateExpression: aws.String("REMOVE #external_names.#rk"),
+		UpdateExpression: aws.String("REMOVE #resources.#rk"),
 		ExpressionAttributeNames: map[string]string{
-			"#external_names": "external_names",
-			"#rk":             resourceKey,
+			"#resources": "resources",
+			"#rk":        resourceKey,
 		},
 		// Only update if the item exists and the resource key exists in the map
-		ConditionExpression: aws.String("attribute_exists(cluster_id) AND attribute_exists(#external_names.#rk)"),
+		ConditionExpression: aws.String("attribute_exists(cluster_id) AND attribute_exists(#resources.#rk)"),
 	})
 
 	if err != nil {
