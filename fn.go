@@ -53,8 +53,8 @@ const (
 	DynamoDBTableAnnotation = "fn.crossplane.io/dynamodb-table"
 	// DynamoDBRegionAnnotation specifies the DynamoDB region
 	DynamoDBRegionAnnotation = "fn.crossplane.io/dynamodb-region"
-	// OperationModeAnnotation specifies the operation mode
-	OperationModeAnnotation = "fn.crossplane.io/operation-mode"
+	// BackupScopeAnnotation specifies which resources to backup
+	BackupScopeAnnotation = "fn.crossplane.io/backup-scope"
 
 	// ConfigMapNamespaceAnnotation specifies the namespace for ConfigMap store
 	ConfigMapNamespaceAnnotation = "fn.crossplane.io/configmap-namespace"
@@ -70,12 +70,12 @@ const (
 	// RequireRestoreAnnotation when set to "true" will fail the function if no external names
 	// can be restored from the store. This prevents accidental resource creation during migrations
 	// when override annotations are misconfigured.
-	RequireRestoreAnnotation = "fn.crossplane.io/require-restore"
+	RequireRestoreAnnotation = "fn.crossplane.io/restore-only"
 
-	// OperationModeOnlyOrphaned processes only orphaned resources
-	OperationModeOnlyOrphaned = "only-orphaned"
-	// OperationModeAllResources processes all resources regardless of policy
-	OperationModeAllResources = "all-resources"
+	// BackupScopeOrphaned processes only orphaned resources
+	BackupScopeOrphaned = "orphaned"
+	// BackupScopeAll processes all resources regardless of policy
+	BackupScopeAll = "all"
 
 	// DeletionPolicyDelete represents the "Delete" deletion policy value
 	DeletionPolicyDelete = "Delete"
@@ -104,7 +104,7 @@ type FunctionConfig struct {
 	DynamoDBTable      string
 	DynamoDBRegion     string
 	ConfigMapNamespace string
-	OperationMode      string
+	BackupScope        string
 }
 
 // getConfigFromAnnotations extracts configuration from XR annotations with defaults
@@ -115,7 +115,7 @@ func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) 
 		DynamoDBTable:      "external-name-backup",
 		DynamoDBRegion:     "us-west-2",
 		ConfigMapNamespace: "crossplane-system",
-		OperationMode:      OperationModeOnlyOrphaned,
+		BackupScope:        BackupScopeOrphaned,
 	}
 
 	// Check observed composite first for XR annotations (the source of truth),
@@ -152,8 +152,8 @@ func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) 
 	if dynamoDBRegion := getConfigAnnotation(DynamoDBRegionAnnotation); dynamoDBRegion != "" {
 		config.DynamoDBRegion = dynamoDBRegion
 	}
-	if operationMode := getConfigAnnotation(OperationModeAnnotation); operationMode != "" {
-		config.OperationMode = operationMode
+	if backupScope := getConfigAnnotation(BackupScopeAnnotation); backupScope != "" {
+		config.BackupScope = backupScope
 	}
 	if configMapNamespace := getConfigAnnotation(ConfigMapNamespaceAnnotation); configMapNamespace != "" {
 		config.ConfigMapNamespace = configMapNamespace
@@ -165,7 +165,7 @@ func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) 
 		"dynamodb-table", config.DynamoDBTable,
 		"dynamodb-region", config.DynamoDBRegion,
 		"configmap-namespace", config.ConfigMapNamespace,
-		"operation-mode", config.OperationMode)
+		"backup-scope", config.BackupScope)
 
 	return config
 }
@@ -568,16 +568,16 @@ func (f *Function) shouldDeleteFromExternalStoreWithFallback(desiredFields, obse
 	return shouldDelete
 }
 
-// shouldProcessResource determines if a resource should be processed based on operation mode
+// shouldProcessResource determines if a resource should be processed based on backup scope
 //
-//nolint:gocyclo // complex operation mode logic
-func (f *Function) shouldProcessResource(fields map[string]*structpb.Value, resourceName string, operationMode string) bool {
-	if operationMode == OperationModeAllResources {
+//nolint:gocyclo // complex backup scope logic
+func (f *Function) shouldProcessResource(fields map[string]*structpb.Value, resourceName string, backupScope string) bool {
+	if backupScope == BackupScopeAll {
 		// Process all resources regardless of deletion policy
 		return true
 	}
 
-	if operationMode == OperationModeOnlyOrphaned {
+	if backupScope == BackupScopeOrphaned {
 		// Check spec.deletionPolicy and spec.managementPolicies
 		if spec := fields["spec"]; spec != nil {
 			if specStruct := spec.GetStructValue(); specStruct != nil {
@@ -616,11 +616,11 @@ func (f *Function) shouldProcessResource(fields map[string]*structpb.Value, reso
 			}
 		}
 
-		f.log.Info("Resource missing spec, skipping in only-orphaned mode", "resource", resourceName)
+		f.log.Info("Resource missing spec, skipping in orphaned backup scope", "resource", resourceName)
 		return false
 	}
 
-	f.log.Info("Unknown operation mode, defaulting to process", "mode", operationMode, "resource", resourceName)
+	f.log.Info("Unknown backup scope, defaulting to process", "scope", backupScope, "resource", resourceName)
 	return true
 }
 
@@ -696,10 +696,10 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	}
 
 	clusterID := config.ClusterID
-	operationMode := config.OperationMode
+	backupScope := config.BackupScope
 	f.log.Info("Using configuration for function execution",
 		"cluster-id", clusterID,
-		"operation-mode", operationMode,
+		"backup-scope", backupScope,
 		"store-type", config.StoreType)
 
 	// Extract claim and XR information from composite resource
@@ -1026,14 +1026,14 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 
 			// Check if this resource should be processed for external store operations
 			// When requireRestore is true, we always attempt restore but never backup
-			shouldProcess := f.shouldProcessResource(fields, resourceName, operationMode)
+			shouldProcess := f.shouldProcessResource(fields, resourceName, backupScope)
 			if !requireRestore {
 				resourceShouldProcess[resourceName] = shouldProcess // Only cache for backup when not in restore mode
 			}
-			// When requireRestore is false, skip if operation mode doesn't allow processing
+			// When requireRestore is false, skip if backup scope doesn't allow processing
 			// When requireRestore is true, always continue to attempt restore
 			if !shouldProcess && !requireRestore {
-				f.log.Info("Skipping external store operations for desired resource due to operation mode", "resource", resourceName, "mode", operationMode)
+				f.log.Info("Skipping external store operations for desired resource due to backup scope", "resource", resourceName, "scope", backupScope)
 				continue
 			}
 
@@ -1209,7 +1209,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			// Check if this resource should be processed for external store operations
 			shouldProcessForStore, exists := resourceShouldProcess[resourceName]
 			if !exists {
-				shouldProcessForStore = f.shouldProcessResource(fields, resourceName, operationMode)
+				shouldProcessForStore = f.shouldProcessResource(fields, resourceName, backupScope)
 				resourceShouldProcess[resourceName] = shouldProcessForStore
 			}
 
@@ -1222,10 +1222,10 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			storedExternalName := getAnnotationValue(composite, StoredExternalNameAnnotation)
 			storedResourceName := getAnnotationValue(composite, StoredResourceNameAnnotation)
 
-			// External name backup respects operation mode (only for managed resources with deletion policies)
+			// External name backup respects backup scope (only for managed resources with deletion policies)
 			shouldStoreExternalName := shouldProcessForStore && externalNameValue != "" && storedExternalName != externalNameValue
 
-			// Resource name (metadata.name) backup is independent of operation mode
+			// Resource name (metadata.name) backup is independent of backup scope
 			// because XRs and other non-managed resources don't have deletion policies
 			shouldStoreResourceName := resourceNameValue != "" && storedResourceName != resourceNameValue
 
@@ -1258,9 +1258,9 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 					"resource-key", observedResourceKey,
 				)
 			} else if !shouldProcessForStore && externalNameValue != "" {
-				f.log.Info("Skipping external name store - resource not eligible in current operation mode",
+				f.log.Info("Skipping external name store - resource not eligible in current backup scope",
 					"resource", resourceName,
-					"mode", operationMode,
+					"scope", backupScope,
 				)
 			}
 		}
@@ -1319,7 +1319,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 				// Check if resource should be processed for external name tracking
 				shouldProcess, exists := resourceShouldProcess[resourceName]
 				shouldAddExternalNameTracking := exists && shouldProcess && storedData.ExternalName != ""
-				// Resource name tracking is always allowed (independent of operation mode)
+				// Resource name tracking is always allowed (independent of backup scope)
 				shouldAddResourceNameTracking := storedData.ResourceName != ""
 
 				if !shouldAddExternalNameTracking && !shouldAddResourceNameTracking {
@@ -1357,7 +1357,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 								annotationsStruct.Fields = make(map[string]*structpb.Value)
 							}
 
-							// Add tracking annotations for external name if stored (respects operation mode)
+							// Add tracking annotations for external name if stored (respects backup scope)
 							if shouldAddExternalNameTracking {
 								annotationsStruct.Fields[StoredExternalNameAnnotation] = &structpb.Value{
 									Kind: &structpb.Value_StringValue{
@@ -1371,7 +1371,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 								}
 							}
 
-							// Add tracking annotations for resource name if stored (independent of operation mode)
+							// Add tracking annotations for resource name if stored (independent of backup scope)
 							if shouldAddResourceNameTracking {
 								annotationsStruct.Fields[StoredResourceNameAnnotation] = &structpb.Value{
 									Kind: &structpb.Value_StringValue{

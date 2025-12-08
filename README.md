@@ -27,7 +27,7 @@ XR name = SHA256(parentUID + compositionResourceName)[:12]
 **The Solution**: This function backs up `metadata.name` for all resources (independent of operation mode), allowing XRs to retain their original names even when parent UIDs change.
 
 **Key difference from external name backup:**
-- **External name backup**: Respects operation mode (only-orphaned vs all-resources)
+- **External name backup**: Respects backup scope (orphaned vs all)
 - **Resource name backup**: Always active for all resources (XRs don't have deletion policies)
 
 ## Overview
@@ -236,7 +236,7 @@ Configuration is provided through XR annotations. All configuration is specified
 | `fn.crossplane.io/dynamodb-table` | `"external-name-backup"` | DynamoDB table name (only for `awsdynamodb`) |
 | `fn.crossplane.io/dynamodb-region` | `"us-west-2"` | AWS region for DynamoDB (only for `awsdynamodb`) |
 | `fn.crossplane.io/configmap-namespace` | `"crossplane-system"` | Namespace for ConfigMap store (only for `k8sconfigmap`, default: `crossplane-system`) |
-| `fn.crossplane.io/operation-mode` | `"only-orphaned"` | Operation mode (`only-orphaned` or `all-resources`) |
+| `fn.crossplane.io/backup-scope` | `"orphaned"` | Backup scope (`orphaned` or `all`) |
 
 ### Optional Annotations
 
@@ -244,7 +244,7 @@ Configuration is provided through XR annotations. All configuration is specified
 |------------|---------|-------------|
 | `fn.crossplane.io/override-kind` | `"XNetwork"` | Override XR kind in composition key lookup (for migrations) |
 | `fn.crossplane.io/override-namespace` | `"none"` | Override namespace in composition key lookup (for migrations from cluster-scoped to namespaced XRs) |
-| `fn.crossplane.io/require-restore` | `"true"` | Enable restore-only mode: always restore from store regardless of operation mode, skip backup, fail if any resource is missing from store |
+| `fn.crossplane.io/restore-only` | `"true"` | Enable restore-only mode: always restore from store regardless of operation mode, skip backup, fail if any resource is missing from store |
 | `fn.crossplane.io/purge-external-store` | `"true"` | Delete all stored external names for this composition |
 
 ### AWS Credentials
@@ -325,15 +325,15 @@ metadata:
 
 ```yaml
 # Set via environment variable
-OPERATION_MODE=all-resources
+BACKUP_SCOPE=all
 
 # Or via ConfigMap
 data:
-  operation-mode: "all-resources"
+  backup-scope: "all"
 ```
 
 **Important Considerations for All Resources Mode:**
-- May require store cleanup similar to only-orphaned mode if resources are deleted
+- May require store cleanup similar to orphaned scope if resources are deleted
 - Increased DynamoDB usage and costs due to processing more resources
 - Tracking annotations help minimize unnecessary writes, but overhead is still higher
 - Recommended primarily for testing or specific experimental use cases
@@ -380,7 +380,7 @@ metadata:
     fn.crossplane.io/enable-external-store: "true"
     fn.crossplane.io/override-kind: "XNetwork"      # Look up keys stored under v1 kind
     fn.crossplane.io/override-namespace: "none"      # Look up keys stored under v1 cluster-scoped format
-    fn.crossplane.io/require-restore: "true"         # Safety: fail if no data found
+    fn.crossplane.io/restore-only: "true"             # Safety: fail if no data found
 ```
 
 **Why these annotations are needed:**
@@ -573,11 +573,11 @@ xp render example/xr.yaml example/composition.yaml example/functions.yaml
 ### Testing Different Operation Modes
 
 ```bash
-# Test only-orphaned mode (default)
-OPERATION_MODE=only-orphaned xp render example/xr.yaml example/composition.yaml example/functions.yaml
+# Test orphaned scope (default)
+BACKUP_SCOPE=orphaned xp render example/xr.yaml example/composition.yaml example/functions.yaml
 
-# Test all-resources mode  
-OPERATION_MODE=all-resources xp render example/xr.yaml example/composition.yaml example/functions.yaml
+# Test all scope
+BACKUP_SCOPE=all xp render example/xr.yaml example/composition.yaml example/functions.yaml
 ```
 
 ## AWS Permissions
@@ -618,7 +618,7 @@ The function requires the following AWS IAM permissions:
 
 3. **Performance issues**
    - Ensure tracking annotations are working to prevent unnecessary writes
-   - Consider using `only-orphaned` mode to reduce processing overhead
+   - Consider using `orphaned` scope to reduce processing overhead
    - Monitor DynamoDB read/write capacity
 
 ### Debugging

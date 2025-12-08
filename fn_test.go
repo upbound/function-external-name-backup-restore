@@ -449,7 +449,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/restore-only": "true"
 									},
 									"labels": {
 										"crossplane.io/claim-name": "test-claim",
@@ -469,7 +469,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/restore-only": "true"
 									}
 								}
 							}`),
@@ -522,7 +522,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/restore-only": "true"
 									},
 									"labels": {
 										"crossplane.io/claim-name": "test-claim",
@@ -542,7 +542,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/restore-only": "true"
 									}
 								}
 							}`),
@@ -573,8 +573,8 @@ func TestRunFunction(t *testing.T) {
 			},
 		},
 
-		"RequireRestoreBypassesOperationMode": {
-			reason: "Should restore external names when require-restore is enabled even if resource doesn't meet orphan criteria",
+		"RestoreOnlyBypassesBackupScope": {
+			reason: "Should restore external names when restore-only is enabled even if resource doesn't meet orphan criteria",
 			setup: func(store *MockResourceStore) {
 				store.Save(context.Background(), "default",
 					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
@@ -600,8 +600,8 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/operation-mode": "only-orphaned",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/backup-scope": "orphaned",
+										"fn.crossplane.io/restore-only": "true"
 									},
 									"labels": {
 										"crossplane.io/claim-name": "test-claim",
@@ -621,8 +621,8 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/operation-mode": "only-orphaned",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/backup-scope": "orphaned",
+										"fn.crossplane.io/restore-only": "true"
 									}
 								}
 							}`),
@@ -681,7 +681,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/restore-only": "true"
 									},
 									"labels": {
 										"crossplane.io/claim-name": "test-claim",
@@ -701,7 +701,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/require-restore": "true"
+										"fn.crossplane.io/restore-only": "true"
 									}
 								}
 							}`),
@@ -737,7 +737,7 @@ func TestRunFunction(t *testing.T) {
 			},
 		},
 
-		"ResourceNameBackupIndependentOfOperationMode": {
+		"ResourceNameBackupIndependentOfBackupScope": {
 			reason: "Should backup metadata.name for all resources but only backup external-name for orphaned resources",
 			setup:  func(store *MockResourceStore) {},
 			args: args{
@@ -1374,8 +1374,8 @@ func TestRunFunction(t *testing.T) {
 			},
 		},
 
-		"AllResourcesMode": {
-			reason: "Should process all resources regardless of deletion policy when in all-resources mode",
+		"AllBackupScope": {
+			reason: "Should process all resources regardless of deletion policy when using all backup scope",
 			args: args{
 				ctx: context.Background(),
 				req: &fnv1.RunFunctionRequest{
@@ -1394,7 +1394,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/operation-mode": "all-resources"
+										"fn.crossplane.io/backup-scope": "all"
 									},
 									"labels": {
 										"crossplane.io/claim-name": "test-claim",
@@ -1427,7 +1427,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/operation-mode": "all-resources"
+										"fn.crossplane.io/backup-scope": "all"
 									}
 								}
 							}`),
@@ -1616,7 +1616,7 @@ func TestRunFunction(t *testing.T) {
 		},
 
 		"ResourceWithoutSpec": {
-			reason: "Should handle resources without spec gracefully in only-orphaned mode",
+			reason: "Should handle resources without spec gracefully in orphaned backup scope",
 			args: args{
 				ctx: context.Background(),
 				req: &fnv1.RunFunctionRequest{

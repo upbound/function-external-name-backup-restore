@@ -11,7 +11,7 @@ metadata:
     fn.crossplane.io/store-type: "awsdynamodb"
     fn.crossplane.io/dynamodb-table: "external-name-backup"
     fn.crossplane.io/dynamodb-region: "us-west-2"
-    fn.crossplane.io/operation-mode: "only-orphaned"
+    fn.crossplane.io/backup-scope: "orphaned"
     # This deletes all the items for this composite from the store
     #fn.crossplane.io/purge-external-store: "true"
   labels:

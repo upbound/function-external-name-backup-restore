@@ -13,8 +13,8 @@ data:
   dynamodb-table-name: "external-name-backup"
   dynamodb-region: "us-west-2"
   
-  # Operation mode: "only-orphaned" (default) or "all-resources"
-  operation-mode: "only-orphaned"
+  # Backup scope: "orphaned" (default) or "all"
+  backup-scope: "orphaned"
 ---
 # Alternative configuration for all resources mode
 apiVersion: v1
@@ -25,4 +25,4 @@ metadata:
 data:
   cluster-id: "dev-local"
   store-type: "static"
-  operation-mode: "all-resources"
+  backup-scope: "all"
