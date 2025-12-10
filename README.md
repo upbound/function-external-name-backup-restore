@@ -126,11 +126,16 @@ roleRef:
   name: function-external-name-backup-restore-configmap
 subjects:
   - kind: ServiceAccount
-    name: function-external-name-backup-restore
+    name: <service-account-name>  # See note below
     namespace: crossplane-system
 ```
 
-**Usage in composition (no credentials needed):**
+> **Note:** The function's ServiceAccount name has an auto-generated suffix (e.g., `function-external-name-backup-restore-a1b2c3d4e5f6`). Retrieve it with:
+> ```bash
+> kubectl get serviceaccount -n crossplane-system -l pkg.crossplane.io/function=function-external-name-backup-restore -o name
+> ```
+
+**Usage in composition:**
 
 ```yaml
 apiVersion: apiextensions.crossplane.io/v1
@@ -146,8 +151,16 @@ spec:
   - step: external-name-backup
     functionRef:
       name: function-external-name-backup-restore
-    # No credentials block needed for ConfigMap store
+    credentials:
+      - name: store-creds
+        source: Secret
+        secretRef:
+          namespace: crossplane-system
+          name: configmap-store-creds  # Can be a dummy secret
+          key: credentials
 ```
+
+> **Note:** The `credentials` block is required due to a Crossplane limitation - if a function uses credentials in any composition, the credentials block must be present in all compositions using that function. Create a dummy secret if no actual credentials are needed (e.g., with ConfigMap store).
 
 **XR annotations for ConfigMap store:**
 
