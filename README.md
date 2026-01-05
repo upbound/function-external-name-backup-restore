@@ -4,15 +4,13 @@ A Crossplane composition function designed for **GitOps disaster recovery scenar
 
 ## The GitOps Gap This Function Fills
 
-In a typical GitOps setup, your Crossplane compositions and claims are stored in Git. If you lose your Kubernetes cluster, you can restore everything from Git. However, there's a critical gap:
+In a typical GitOps setup, your Crossplane XRs and claims are stored in Git. If you lose your Kubernetes cluster, you can restore everything from Git. However, there's a critical gap:
 
 **Cloud resources with auto-generated names** cannot be restored from Git alone because their external names aren't predetermined.
 
 **Common Examples:**
 - **AWS Networking**: VPCs (`vpc-0123456789abcdef0`), subnets (`subnet-0abc123def456789`), security groups (`sg-0987654321fedcba`)
-- **Storage**: S3 buckets with random suffixes, EBS volumes
-- **Databases**: RDS instances with generated identifiers
-- **Load Balancers**: ELBs with auto-generated names
+- **EC2 Instances**: Instances with generated instance-ids
 
 ## XR Name Backup (Nested Compositions)
 
@@ -24,38 +22,31 @@ XR name = SHA256(parentUID + compositionResourceName)[:12]
 
 **The Problem**: If the parent UID changes (e.g., during migration or recreation), all child XR names change, breaking references to existing resources.
 
-**The Solution**: This function backs up `metadata.name` for all resources (independent of operation mode), allowing XRs to retain their original names even when parent UIDs change.
-
-**Key difference from external name backup:**
-- **External name backup**: Respects backup scope (orphaned vs all)
-- **Resource name backup**: Always active for all resources (XRs don't have deletion policies)
+**The Solution**: This function backs up `metadata.name` for all resources, allowing XRs to retain their original names even when parent UIDs change.
 
 ## Overview
 
 **Primary Use Case**: Full GitOps infrastructure backup and restore for resources with unpredictable external names.
 
-When you restore your GitOps configuration from Git:
-1. Crossplane recreates the managed resources 
+When you restore your GitOps configuration from Git without external names explicitly set:
+1. Crossplane recreates the managed resources
 2. Resources with `deletionPolicy: Orphan` still exist in your cloud provider
-3. **Without this function**: Crossplane generates new external names → creates duplicate cloud resources
+3. **Without this function**: Crossplane cannot find the resources → creates duplicate cloud resources
 4. **With this function**: External names are restored from backup → Crossplane adopts existing cloud resources
 
 This function solves the GitOps gap by:
-- **Backing up** external names and resource names from observed resources to DynamoDB during normal operations
+- **Backing up** external names and resource names from observed resources during normal operations
 - **Restoring** external names and resource names to desired resources during GitOps recovery
 - **Focusing on orphaned resources** for external names (the ones that survive cluster disasters)
-- **Backing up all resource names** regardless of operation mode (for XRs in nested compositions)
-- **Providing audit trails** for compliance and troubleshooting
+- **Backing up all resource names** for XRs in nested compositions
 
 ## Features
 
 - 🔄 **Automatic Backup & Restore**: Seamlessly handles external name and resource name persistence
-- 🎯 **Operation Modes**: Choose between processing only orphaned resources or all resources for external names
-- 📦 **XR Name Backup**: Always backs up `metadata.name` for all resources (independent of operation mode)
-- 📊 **Multiple Storage Backends**: AWS DynamoDB or Kubernetes ConfigMaps
+- 🎯 **Backup Scope**: Choose between processing only orphaned resources or all resources for external names
+- 📦 **XR Name Backup**: Always backs up `metadata.name` for all resources
+- 📊 **Multiple Storage Backends**: AWS DynamoDB or Kubernetes ConfigMaps (ConfigMaps are mainly for short-lived migration use-cases)
 - 🏷️ **Annotation-Based Control**: Fine-grained control through XR annotations
-- ⚡ **Performance Optimized**: Tracking annotations prevent unnecessary writes
-- 🔧 **Flexible Configuration**: Environment variables and ConfigMap support
 - 🧹 **Purge Capabilities**: Clean up stored data when needed
 
 ## Quick Start
@@ -97,7 +88,7 @@ No external infrastructure required. The function stores data in ConfigMaps with
 **ConfigMap naming convention:** `external-name-backup-{cluster-id}`
 
 **Data structure:**
-- Each ConfigMap contains data for one cluster
+- Each ConfigMap contains data for one cluster id
 - Composition keys are base64-encoded as data keys
 - Resource data is stored as JSON
 
@@ -134,6 +125,8 @@ subjects:
 > ```bash
 > kubectl get serviceaccount -n crossplane-system -l pkg.crossplane.io/function=function-external-name-backup-restore -o name
 > ```
+
+Alternatively use a DeploymentRuntimeConfig to use a predictable serviceaccount.
 
 **Usage in composition:**
 
@@ -195,7 +188,7 @@ The credentials can be provided in two formats:
 **JSON Format (recommended):**
 ```json
 {
-  "accessKeyId": "AKIAIOSFODNN7EXAMPLE", 
+  "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
   "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
   "sessionToken": "optional-for-temporary-credentials"
 }
@@ -213,7 +206,7 @@ aws_session_token = optional-for-temporary-credentials
 
 ```yaml
 apiVersion: apiextensions.crossplane.io/v1
-kind: Composition  
+kind: Composition
 metadata:
   name: my-composition
 spec:
@@ -257,24 +250,22 @@ Configuration is provided through XR annotations. All configuration is specified
 |------------|---------|-------------|
 | `fn.crossplane.io/override-kind` | `"XNetwork"` | Override XR kind in composition key lookup (for migrations) |
 | `fn.crossplane.io/override-namespace` | `"none"` | Override namespace in composition key lookup (for migrations from cluster-scoped to namespaced XRs) |
-| `fn.crossplane.io/restore-only` | `"true"` | Enable restore-only mode: always restore from store regardless of operation mode, skip backup, fail if any resource is missing from store |
+| `fn.crossplane.io/restore-only` | `"true"` | Enable restore-only mode: always restore from store regardless of backup scope, skip backup, fail if any resource is missing from store |
 | `fn.crossplane.io/purge-external-store` | `"true"` | Delete all stored external names for this composition |
 
 ### AWS Credentials
 
 AWS credentials are provided via Crossplane's credential management system. The function supports:
-- Static credentials (Access Key ID + Secret Access Key)  
-- Temporary credentials (with Session Token)
-- Falls back to default AWS credential chain if no credentials provided
+- Static credentials (Access Key ID + Secret Access Key)
 
-## Operation Modes
+## Backup Scope
 
 ### Only Orphaned Mode (Default - Recommended)
 
 **This is the intended mode of operation for production environments.** This mode is designed for critical production resources that are usually not intended to be deleted, where preserving external names is crucial for maintaining infrastructure consistency.
 
 Processes only resources that meet orphaned criteria:
-- `deletionPolicy: Orphan`, OR  
+- `deletionPolicy: Orphan`, OR
 - `managementPolicies` that don't contain `"*"` or `"Delete"`
 
 ```yaml
@@ -283,14 +274,14 @@ spec:
   deletionPolicy: Orphan
   managementPolicies: ["*"]  # Orphan policy takes precedence
 
-# This resource WILL be processed  
+# This resource WILL be processed
 spec:
   deletionPolicy: Delete
   managementPolicies: ["Create", "Update", "Observe"]  # No Delete policy
 
 # This resource will NOT be processed
 spec:
-  deletionPolicy: Delete  
+  deletionPolicy: Delete
   managementPolicies: ["*"]  # Contains Delete via wildcard
 ```
 
@@ -408,7 +399,7 @@ metadata:
 
 When set to `"true"`, the function operates in **restore-only mode** with the following behavior:
 
-1. **Bypass operation mode for restore**: External names and resource names are restored from the store regardless of whether resources meet orphan criteria. This is essential for migrations where the new XR may not have matching `deletionPolicy` or `managementPolicies` set yet.
+1. **Bypass backup scope for restore**: External names and resource names are restored from the store regardless of whether resources meet orphan criteria. This is essential for migrations where the new XR may not have matching `deletionPolicy` or `managementPolicies` set yet.
 
 2. **Skip backup operations**: The function will NOT write any new data to the store, preventing accidental overwrites of existing backup data.
 
@@ -499,13 +490,13 @@ Data:
 1. **Load Phase**: Load existing resource data from DynamoDB
 2. **Deletion Check**: Check desired resources for deletion criteria (policy change from Orphan to Delete)
 3. **Desired Resources Processing**:
-   - Check each resource against operation mode criteria (for external names)
+   - Check each resource against backup scope criteria (for external names)
    - Restore external names from store if available and not already set
    - Restore resource names (`metadata.name`) from store if not already set
    - Add tracking annotations
 4. **Observed Resources Processing**:
-   - Collect external names from resources (respects operation mode)
-   - Collect resource names from all resources (independent of operation mode)
+   - Collect external names from resources (respects backup scope)
+   - Collect resource names from all resources (independent of backup scope)
    - Use tracking annotations to optimize writes
 5. **Store Phase**: Save collected resource data back to DynamoDB
 
@@ -583,7 +574,7 @@ go build .
 xp render example/xr.yaml example/composition.yaml example/functions.yaml
 ```
 
-### Testing Different Operation Modes
+### Testing Different Backup Scopes
 
 ```bash
 # Test orphaned scope (default)
@@ -605,7 +596,7 @@ The function requires the following AWS IAM permissions:
       "Effect": "Allow",
       "Action": [
         "dynamodb:GetItem",
-        "dynamodb:PutItem", 
+        "dynamodb:PutItem",
         "dynamodb:DeleteItem",
         "dynamodb:DescribeTable"
       ],
@@ -625,7 +616,7 @@ The function requires the following AWS IAM permissions:
    - Verify IAM permissions
 
 2. **External names not being restored**
-   - Check operation mode matches your resource configuration
+   - Check backup scope matches your resource configuration
    - Verify data exists in DynamoDB for your composition key
    - Check function logs for processing details
 

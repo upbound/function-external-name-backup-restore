@@ -758,7 +758,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/operation-mode": "only-orphaned"
+										"fn.crossplane.io/backup-scope": "orphaned"
 									},
 									"labels": {
 										"crossplane.io/claim-name": "test-claim",
@@ -812,7 +812,7 @@ func TestRunFunction(t *testing.T) {
 									"annotations": {
 										"fn.crossplane.io/enable-external-store": "true",
 										"fn.crossplane.io/store-type": "mock",
-										"fn.crossplane.io/operation-mode": "only-orphaned"
+										"fn.crossplane.io/backup-scope": "orphaned"
 									}
 								}
 							}`),
