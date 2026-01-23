@@ -1,0 +1,88 @@
+---
+apiVersion: aws.platform.upbound.io/v1alpha1
+kind: XNetwork
+metadata:
+  name: example-xr
+status:
+  conditions:
+  - lastTransitionTime: "2024-01-01T00:00:00Z"
+    message: 'Unready resources: bucketshouldnotprocess, bucketshouldprocess1, and
+      bucketshouldprocess2'
+    reason: Creating
+    status: "False"
+    type: Ready
+---
+apiVersion: s3.aws.upbound.io/v1beta1
+kind: Bucket
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: bucketshouldnotprocess
+    crossplane.io/external-name: bucketshouldnotprocess
+    #fn.crossplane.io/stored-external-name: bucketshouldnotprocess
+  generateName: example-xr-
+  labels:
+    crossplane.io/composite: example-xr
+  ownerReferences:
+  - apiVersion: aws.platform.upbound.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: XNetwork
+    name: example-xr
+    uid: ""
+spec:
+  bucket: test
+  deletionPolicy: Orphan
+  forProvider:
+    region: us-west-2
+  managementPolicies:
+  - '*'
+---
+apiVersion: s3.aws.upbound.io/v1beta1
+kind: Bucket
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: bucketshouldprocess1
+    crossplane.io/external-name: bucketshouldprocess1
+  generateName: example-xr-
+  labels:
+    crossplane.io/composite: example-xr
+  ownerReferences:
+  - apiVersion: aws.platform.upbound.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: XNetwork
+    name: example-xr
+    uid: ""
+spec:
+  bucket: test
+  deletionPolicy: Orphan
+  forProvider:
+    region: us-west-2
+  managementPolicies:
+  - '*'
+---
+apiVersion: s3.aws.upbound.io/v1beta1
+kind: Bucket
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: bucketshouldprocess2
+    crossplane.io/external-name: bucketshouldprocess2
+  generateName: example-xr-
+  labels:
+    crossplane.io/composite: example-xr
+  ownerReferences:
+  - apiVersion: aws.platform.upbound.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: XNetwork
+    name: example-xr
+    uid: ""
+spec:
+  bucket: test
+  deletionPolicy: Delete
+  forProvider:
+    region: us-west-2
+  managementPolicies:
+  - Create
+  - Update
+  - Observe

@@ -1,0 +1,28 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-name-backup-config
+  namespace: crossplane-system
+data:
+  # Cluster identifier for this deployment
+  cluster-id: "prod-us-west-2"
+  
+  # External store configuration
+  store-type: "awsdynamodb"
+  dynamodb-table-name: "external-name-backup"
+  dynamodb-region: "us-west-2"
+  
+  # Backup scope: "orphaned" (default) or "all"
+  backup-scope: "orphaned"
+---
+# Alternative configuration for all resources mode
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-name-backup-config-all
+  namespace: crossplane-system
+data:
+  cluster-id: "dev-local"
+  store-type: "static"
+  backup-scope: "all"

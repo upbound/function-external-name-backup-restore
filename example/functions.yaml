@@ -2,10 +2,25 @@
 apiVersion: pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
-  name: function-template-go
+  name: function-external-name-backup-restore
   annotations:
     # This tells crossplane beta render to connect to the function locally.
     render.crossplane.io/runtime: Development
 spec:
   # This is ignored when using the Development runtime.
-  package: function-template-go
+  package: function-external-name-backup-restore
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: upbound-configuration-aws-networkxnetwork
+spec:
+  # This is ignored when using the Development runtime.
+  package: xpkg.upbound.io/upbound/configuration-aws-network_xnetwork@sha256:dbc9eb2352ff5636c1edd1b9298b9bc05c6fce4f69d9d1108526befcc362b53c
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+spec:
+  package: xpkg.upbound.io/upbound/function-patch-and-transform:v0.9.0
