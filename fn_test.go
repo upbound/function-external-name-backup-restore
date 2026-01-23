@@ -430,7 +430,7 @@ func TestRunFunction(t *testing.T) {
 
 		"RequireRestoreFailsWhenNoData": {
 			reason: "Should fail when require-restore is enabled but no external names found in store",
-			setup:  func(store *MockResourceStore) {},
+			setup:  func(_ *MockResourceStore) {},
 			args: args{
 				ctx: context.Background(),
 				req: &fnv1.RunFunctionRequest{
@@ -739,7 +739,7 @@ func TestRunFunction(t *testing.T) {
 
 		"ResourceNameBackupIndependentOfBackupScope": {
 			reason: "Should backup metadata.name for all resources but only backup external-name for orphaned resources",
-			setup:  func(store *MockResourceStore) {},
+			setup:  func(_ *MockResourceStore) {},
 			args: args{
 				ctx: context.Background(),
 				req: &fnv1.RunFunctionRequest{

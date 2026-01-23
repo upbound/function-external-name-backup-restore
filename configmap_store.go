@@ -66,15 +66,6 @@ func (c *ConfigMapStore) encodeKey(compositionKey string) string {
 	return base64.StdEncoding.EncodeToString([]byte(compositionKey))
 }
 
-// decodeKey decodes a base64-encoded ConfigMap data key back to a composition key
-func (c *ConfigMapStore) decodeKey(encodedKey string) (string, error) {
-	decoded, err := base64.StdEncoding.DecodeString(encodedKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode key: %w", err)
-	}
-	return string(decoded), nil
-}
-
 // Save stores resource data for an entire composition in a ConfigMap
 func (c *ConfigMapStore) Save(ctx context.Context, clusterID, compositionKey string, resources map[string]ResourceData) error {
 	configMapName := c.getConfigMapName(clusterID)
