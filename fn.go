@@ -108,6 +108,8 @@ type FunctionConfig struct {
 }
 
 // getConfigFromAnnotations extracts configuration from XR annotations with defaults
+//
+//nolint:gocyclo // complexity of 11 is acceptable for this config extraction function
 func getConfigFromAnnotations(req *fnv1.RunFunctionRequest, log logging.Logger) *FunctionConfig {
 	config := &FunctionConfig{
 		ClusterID:          "default",
