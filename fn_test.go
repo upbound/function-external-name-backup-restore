@@ -737,6 +737,91 @@ func TestRunFunction(t *testing.T) {
 			},
 		},
 
+		"RequireRestoreSkipsNonManagedResources": {
+			reason: "Should skip Usage resources during restore-only validation instead of failing",
+			setup: func(store *MockResourceStore) {
+				store.Save(context.Background(), "default",
+					"default/test-claim/example.io/v1alpha1/XExample/test-xr",
+					map[string]ResourceData{
+						"bucket": {ExternalName: "bucket-restored", ResourceName: "bucket-abc123"},
+					})
+			},
+			args: args{
+				ctx: context.Background(),
+				req: &fnv1.RunFunctionRequest{
+					Meta: &fnv1.RequestMeta{Tag: "test"},
+					Input: resource.MustStructJSON(`{
+						"apiVersion": "externalname.fn.crossplane.io/v1beta1",
+						"kind": "Input"
+					}`),
+					Observed: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/restore-only": "true"
+									},
+									"labels": {
+										"crossplane.io/claim-name": "test-claim",
+										"crossplane.io/claim-namespace": "default"
+									}
+								}
+							}`),
+						},
+					},
+					Desired: &fnv1.State{
+						Composite: &fnv1.Resource{
+							Resource: resource.MustStructJSON(`{
+								"apiVersion": "example.io/v1alpha1",
+								"kind": "XExample",
+								"metadata": {
+									"name": "test-xr",
+									"annotations": {
+										"fn.crossplane.io/enable-external-store": "true",
+										"fn.crossplane.io/store-type": "mock",
+										"fn.crossplane.io/restore-only": "true"
+									}
+								}
+							}`),
+						},
+						Resources: map[string]*fnv1.Resource{
+							"bucket": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "s3.aws.upbound.io/v1beta1",
+									"kind": "Bucket",
+									"spec": {
+										"deletionPolicy": "Orphan",
+										"managementPolicies": ["*"]
+									}
+								}`),
+							},
+							"usage": {
+								Resource: resource.MustStructJSON(`{
+									"apiVersion": "apiextensions.crossplane.io/v1alpha1",
+									"kind": "Usage"
+								}`),
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				err: nil,
+				desiredAnnotations: map[string]map[string]string{
+					"bucket": {
+						"crossplane.io/external-name":             "bucket-restored",
+						"fn.crossplane.io/external-name-restored": "",
+						"fn.crossplane.io/stored-resource-name":   "bucket-abc123",
+					},
+				},
+			},
+		},
+
 		"ResourceNameBackupIndependentOfBackupScope": {
 			reason: "Should backup metadata.name for all resources but only backup external-name for orphaned resources",
 			setup:  func(_ *MockResourceStore) {},

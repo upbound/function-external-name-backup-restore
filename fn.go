@@ -391,6 +391,19 @@ func checkPurgeAnnotation(composite *structpb.Struct, log logging.Logger, source
 	return false
 }
 
+// nonManagedKinds is the set of Crossplane resource kinds that don't have external names.
+// These are internal orchestration resources (e.g., Usage) that should be skipped
+// during restore-only validation since they never appear in backup data.
+var nonManagedKinds = map[string]bool{
+	"Usage": true,
+}
+
+// isNonManagedResource returns true for resource kinds that inherently don't have
+// external names and should be skipped during restore-only validation.
+func isNonManagedResource(kind string) bool {
+	return nonManagedKinds[kind]
+}
+
 // shouldRequireRestore checks if the require-restore annotation is set to "true"
 // When enabled, the function will fail if no external names can be restored from the store
 // This prevents accidental resource creation during migrations when override annotations are misconfigured
@@ -1164,6 +1177,11 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 				} else {
 					f.log.Info("No data found in store for resource", "resource", resourceName, "composition-key", compositionKey, "resource-key", resourceKey)
 					if requireRestore {
+						if isNonManagedResource(kind) {
+							f.log.Info("Skipping restore check for non-managed resource",
+								"resource", resourceName, "kind", kind)
+							continue
+						}
 						response.Fatal(rsp, errors.Errorf(
 							"require-restore is enabled but no data found in store for resource %q (composition key: %q). "+
 								"All resources must have data in the store when require-restore is set.",
