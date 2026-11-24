@@ -214,13 +214,20 @@ jobs:
       # source in Crossplane's package lock, which collides ("node already
       # exists"). The <repo>-e2e-wrapper repo is granted to the e2e robot in
       # solutions-gitops-prod.
+      #
+      # TMPDIR=e2e/.tmp: up test copies each test manifest into a new directory
+      # directly under $TMPDIR, and uptest resolves hook annotations
+      # (uptest.upbound.io/pre-assert-hook etc.) relative to that copy. With
+      # TMPDIR here, a hook path like ../../tests/<test>/hook.sh points at the
+      # script in the repo.
       - name: Run e2e tests
         if: steps.harness.outputs.present == 'true'
         working-directory: e2e
         run: |
           REPO="${GITHUB_REPOSITORY##*/}"
           REPO="${REPO,,}"
-          up test run tests/* --e2e --public \
+          mkdir -p .tmp
+          TMPDIR="$PWD/.tmp" up test run tests/* --e2e --public \
             --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e-wrapper"
 
       # Also after a failed or cancelled run, so nothing is left behind. Best
