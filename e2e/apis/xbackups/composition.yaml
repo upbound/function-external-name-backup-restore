@@ -1,0 +1,42 @@
+# Composes one ConfigMap and runs the function under test on it, with the
+# ConfigMap store (no cloud account needed). Readiness is the assertion: the
+# ConfigMap is Ready only when its observed crossplane.io/external-name equals
+# spec.expectedExternalName, so an XR that gets its external name only by
+# restore can't become Ready unless the restore worked.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xbackups.e2e.extnamebackup.upbound.io
+spec:
+  compositeTypeRef:
+    apiVersion: e2e.extnamebackup.upbound.io/v1alpha1
+    kind: XBackup
+  mode: Pipeline
+  pipeline:
+  - step: render
+    functionRef:
+      name: crossplane-contrib-function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          {{- $xr := .observed.composite.resource }}
+          {{- $observed := dig "resources" "config" "resource" dict .observed }}
+          {{- $current := dig "metadata" "annotations" "crossplane.io/external-name" "" $observed }}
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: {{ $xr.metadata.namespace }}
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: config
+              gotemplating.fn.crossplane.io/ready: {{ if eq $current $xr.spec.expectedExternalName }}"True"{{ else }}"False"{{ end }}
+              {{- with $xr.spec.externalName }}
+              crossplane.io/external-name: {{ . }}
+              {{- end }}
+          data:
+            purpose: e2e test of function-external-name-backup-restore
+  - step: backup-restore
+    functionRef:
+      name: solutions-function-external-name-backup-restore

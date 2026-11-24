@@ -1,0 +1,100 @@
+# End-to-end test for function-external-name-backup-restore. `up test run
+# tests/* --e2e` spins up a throwaway Spaces control plane, installs this
+# project (the XRD and Composition in apis/, plus the function under test as a
+# dependency), creates both XRs and waits for them to go Ready.
+#
+# - e2e-source/e2e-backup composes a ConfigMap with a known external name; the
+#   function backs it up to the ConfigMap store.
+# - e2e-restore/e2e-backup reads that backup (override-namespace) in
+#   restore-only mode, and its ConfigMap has no external name of its own.
+#   restore-only is fatal until every composed resource has a backup, and the
+#   Composition keeps the ConfigMap unready until the restored external name is
+#   on it. So this XR is Ready only after a real backup and restore.
+apiVersion: meta.dev.upbound.io/v1alpha1
+kind: E2ETest
+metadata:
+  name: e2e-backup-restore
+spec:
+  crossplane:
+    autoUpgrade:
+      channel: Rapid
+  defaultConditions:
+    - Ready
+  initResources:
+    - apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: e2e-source
+    - apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: e2e-restore
+    # The ConfigMap store reads and writes ConfigMaps with the function pod's
+    # ServiceAccount, whose name has a generated suffix: bind the role to all
+    # ServiceAccounts in crossplane-system (throwaway control plane).
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: e2e-external-name-store
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          verbs: ["get", "create", "update", "delete"]
+        - apiGroups: [""]
+          resources: ["namespaces"]
+          verbs: ["get"]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: e2e-external-name-store
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: e2e-external-name-store
+      subjects:
+        - apiGroup: rbac.authorization.k8s.io
+          kind: Group
+          name: system:serviceaccounts:crossplane-system
+    # Lets Crossplane compose ConfigMaps (it has no ConfigMap access by default).
+    # Explicit verbs: the test user can only grant verbs it holds, so "*" fails.
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: e2e-crossplane-configmaps
+        labels:
+          rbac.crossplane.io/aggregate-to-crossplane: "true"
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  manifests:
+    - apiVersion: e2e.extnamebackup.upbound.io/v1alpha1
+      kind: XBackup
+      metadata:
+        name: e2e-backup
+        namespace: e2e-source
+        annotations:
+          fn.crossplane.io/enable-external-store: "true"
+          fn.crossplane.io/store-type: k8sconfigmap
+          fn.crossplane.io/cluster-id: e2e
+          # A ConfigMap has no deletionPolicy, so back up all resources.
+          fn.crossplane.io/backup-scope: all
+      spec:
+        externalName: e2e-original-external-name
+        expectedExternalName: e2e-original-external-name
+    - apiVersion: e2e.extnamebackup.upbound.io/v1alpha1
+      kind: XBackup
+      metadata:
+        name: e2e-backup
+        namespace: e2e-restore
+        annotations:
+          fn.crossplane.io/enable-external-store: "true"
+          fn.crossplane.io/store-type: k8sconfigmap
+          fn.crossplane.io/cluster-id: e2e
+          fn.crossplane.io/backup-scope: all
+          fn.crossplane.io/override-namespace: e2e-source
+          fn.crossplane.io/restore-only: "true"
+      spec:
+        expectedExternalName: e2e-original-external-name
+  skipDelete: false
+  timeoutSeconds: 900

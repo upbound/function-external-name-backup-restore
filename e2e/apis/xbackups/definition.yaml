@@ -1,0 +1,29 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xbackups.e2e.extnamebackup.upbound.io
+spec:
+  group: e2e.extnamebackup.upbound.io
+  scope: Namespaced
+  names:
+    kind: XBackup
+    plural: xbackups
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              externalName:
+                description: External name the composed ConfigMap starts with. Empty means it gets one only by restore.
+                type: string
+              expectedExternalName:
+                description: The composed ConfigMap is Ready only once its observed external name equals this.
+                type: string
+            required:
+            - expectedExternalName
