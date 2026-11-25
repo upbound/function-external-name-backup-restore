@@ -2,7 +2,7 @@ module github.com/crossplane/function-external-name-backup-restore
 
 go 1.23.0
 
-toolchain go1.23.2
+toolchain go1.26.11
 
 require (
 	github.com/alecthomas/kong v0.9.0
